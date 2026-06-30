@@ -48,7 +48,20 @@ export const ChatWaitRequestSchema = z.object({
   requestId: z.string(),
   room: z.string(),
   afterMessageId: z.string().optional(),
+  // COMPAT(chatMessageEdit): edit-aware cursor. When present, the daemon returns
+  // messages with seq > afterSeq (new OR edited), so streamed/edited messages
+  // reach the client. Takes precedence over afterMessageId. Legacy clients keep
+  // sending afterMessageId and get the original new-messages-only behavior.
+  afterSeq: z.number().int().nonnegative().optional(),
   timeoutMs: z.number().int().nonnegative().optional(),
+});
+
+export const ChatEditRequestSchema = z.object({
+  type: z.literal("chat/edit"),
+  requestId: z.string(),
+  room: z.string(),
+  messageId: z.string(),
+  body: z.string(),
 });
 
 export const ChatCreateResponseSchema = z.object({
@@ -111,6 +124,15 @@ export const ChatWaitResponseSchema = z.object({
     requestId: z.string(),
     messages: z.array(ChatMessageSchema),
     timedOut: z.boolean(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const ChatEditResponseSchema = z.object({
+  type: z.literal("chat/edit/response"),
+  payload: z.object({
+    requestId: z.string(),
+    message: ChatMessageSchema.nullable(),
     error: z.string().nullable(),
   }),
 });

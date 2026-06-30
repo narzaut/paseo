@@ -13,6 +13,7 @@ import {
   ChatPostRequestSchema,
   ChatReadRequestSchema,
   ChatWaitRequestSchema,
+  ChatEditRequestSchema,
   ChatCreateResponseSchema,
   ChatListResponseSchema,
   ChatInspectResponseSchema,
@@ -20,6 +21,7 @@ import {
   ChatPostResponseSchema,
   ChatReadResponseSchema,
   ChatWaitResponseSchema,
+  ChatEditResponseSchema,
 } from "./chat/rpc-schemas.js";
 import {
   ScheduleCreateRequestSchema,
@@ -2143,6 +2145,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ChatPostRequestSchema,
   ChatReadRequestSchema,
   ChatWaitRequestSchema,
+  ChatEditRequestSchema,
   ScheduleCreateRequestSchema,
   ScheduleListRequestSchema,
   ScheduleInspectRequestSchema,
@@ -4274,6 +4277,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ChatPostResponseSchema,
   ChatReadResponseSchema,
   ChatWaitResponseSchema,
+  ChatEditResponseSchema,
   ScheduleCreateResponseSchema,
   ScheduleListResponseSchema,
   ScheduleInspectResponseSchema,
@@ -4413,6 +4417,7 @@ export type ChatDeleteResponse = z.infer<typeof ChatDeleteResponseSchema>;
 export type ChatPostResponse = z.infer<typeof ChatPostResponseSchema>;
 export type ChatReadResponse = z.infer<typeof ChatReadResponseSchema>;
 export type ChatWaitResponse = z.infer<typeof ChatWaitResponseSchema>;
+export type ChatEditResponse = z.infer<typeof ChatEditResponseSchema>;
 export type ScheduleCreateResponse = z.infer<typeof ScheduleCreateResponseSchema>;
 export type ScheduleListResponse = z.infer<typeof ScheduleListResponseSchema>;
 export type ScheduleInspectResponse = z.infer<typeof ScheduleInspectResponseSchema>;
@@ -4478,6 +4483,7 @@ export type ChatDeleteRequest = z.infer<typeof ChatDeleteRequestSchema>;
 export type ChatPostRequest = z.infer<typeof ChatPostRequestSchema>;
 export type ChatReadRequest = z.infer<typeof ChatReadRequestSchema>;
 export type ChatWaitRequest = z.infer<typeof ChatWaitRequestSchema>;
+export type ChatEditRequest = z.infer<typeof ChatEditRequestSchema>;
 export type ScheduleCreateRequest = z.infer<typeof ScheduleCreateRequestSchema>;
 export type ScheduleListRequest = z.infer<typeof ScheduleListRequestSchema>;
 export type ScheduleInspectRequest = z.infer<typeof ScheduleInspectRequestSchema>;

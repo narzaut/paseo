@@ -18,6 +18,15 @@ export const ChatMessageSchema = z.object({
   replyToMessageId: z.string().nullable(),
   mentionAgentIds: z.array(z.string()),
   createdAt: z.string(),
+  // COMPAT(chatMessageEdit): added 2026-06-30, drop optionality when floor >= the
+  // release that ships chat/edit. `updatedAt` tracks the last edit (defaults to
+  // createdAt on the wire for unedited messages); `seq` is a monotonic
+  // server-assigned sequence bumped on create AND edit, so an edit-aware
+  // `chat/wait` cursor (afterSeq) re-delivers an edited message. Optional so a
+  // 6-month-old client still parses messages from a new daemon and a new client
+  // still parses a legacy store / old daemon that never set them.
+  updatedAt: z.string().optional(),
+  seq: z.number().int().nonnegative().optional(),
 });
 
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;

@@ -34,6 +34,35 @@ export interface SeedDaemonClient {
   fetchWorkspaces(options?: { filter?: { projectId?: string } }): Promise<{
     entries: SeedWorkspaceDescriptor[];
   }>;
+  listChatRooms(): Promise<{ rooms: Array<{ id: string; name: string }>; error: string | null }>;
+  createChatRoom(options: { name: string; purpose?: string }): Promise<{
+    room: { id: string; name: string } | null;
+    error: string | null;
+  }>;
+  readChatMessages(options: { room: string; limit?: number }): Promise<{
+    messages: Array<{
+      id: string;
+      roomId: string;
+      authorAgentId: string;
+      body: string;
+      replyToMessageId: string | null;
+      mentionAgentIds: string[];
+      createdAt: string;
+    }>;
+    error: string | null;
+  }>;
+  postChatMessage(options: { room: string; body: string; authorAgentId?: string }): Promise<{
+    message: {
+      id: string;
+      roomId: string;
+      authorAgentId: string;
+      body: string;
+      replyToMessageId: string | null;
+      mentionAgentIds: string[];
+      createdAt: string;
+    } | null;
+    error: string | null;
+  }>;
   createWorkspace(input: {
     source:
       | { kind: "directory"; path: string; projectId?: string }

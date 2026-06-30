@@ -782,6 +782,8 @@ interface ComposerProps {
   agentControls?: DraftAgentControlsProps;
   /** Extra styles merged onto the message input wrapper (e.g. elevated background). */
   inputWrapperStyle?: import("react-native").ViewStyle;
+  /** Override the default attachment menu entries. Pass an empty array to hide attachments. */
+  attachmentMenuItemsOverride?: AttachmentMenuItem[];
   /** Rendered below the input, inside the keyboard-shifted container. */
   footer?: ReactNode;
   /** When true, a parent wrapper owns the keyboard shift, so the composer skips its own. */
@@ -988,6 +990,7 @@ export function Composer({
   onAttentionPromptSend,
   agentControls,
   inputWrapperStyle,
+  attachmentMenuItemsOverride,
   footer,
   externalKeyboardShift,
   isCompactLayout: isCompactLayoutOverride,
@@ -1049,10 +1052,10 @@ export function Composer({
     text: userInput,
     remoteUrl: resolveCheckoutRemoteUrl(checkoutStatusQuery.status),
     attachments,
-    client,
-    isConnected,
+    client: attachmentMenuItemsOverride === undefined ? client : null,
+    isConnected: attachmentMenuItemsOverride === undefined && isConnected,
     serverId,
-    cwd,
+    cwd: attachmentMenuItemsOverride === undefined ? cwd : "",
     setAttachments: setSelectedAttachments,
   });
   const [cursorIndex, setCursorIndex] = useState(0);
@@ -1725,8 +1728,11 @@ export function Composer({
     [githubSearchItems, githubSearchQueryTrimmed],
   );
 
-  const attachmentMenuItems = useMemo<AttachmentMenuItem[]>(
-    () => [
+  const attachmentMenuItems = useMemo<AttachmentMenuItem[]>(() => {
+    if (attachmentMenuItemsOverride) {
+      return attachmentMenuItemsOverride;
+    }
+    return [
       {
         id: "image",
         label: t("composer.attachments.addImage"),
@@ -1751,9 +1757,8 @@ export function Composer({
           void handlePickFile();
         },
       },
-    ],
-    [handlePickImage, handlePickFile, t],
-  );
+    ];
+  }, [attachmentMenuItemsOverride, handlePickImage, handlePickFile, t]);
 
   const handleToggleGithubItem = useCallback(
     (item: GitHubSearchItem) => {
@@ -1891,7 +1896,7 @@ export function Composer({
   // backdrop and rejects the drop atomically, instead of accepting a drop with no feedback.
   useFileDrop(
     { onFiles: addImages, onGenericFiles: handleGenericFilesDropped },
-    { disabled: isSubmitBusy },
+    { disabled: isSubmitBusy || attachmentMenuItems.length === 0 },
   );
 
   const messageInputAutoFocus = autoFocus && isDesktopWebBreakpoint;
@@ -1946,7 +1951,7 @@ export function Composer({
                 cwd={cwd}
                 attachmentMenuItems={attachmentMenuItems}
                 onAttachButtonRef={handleAttachButtonRef}
-                onAddImages={addImages}
+                onAddImages={attachmentMenuItems.length > 0 ? addImages : undefined}
                 client={client}
                 isReadyForDictation={isDictationReady}
                 placeholder={messagePlaceholder}

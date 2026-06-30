@@ -1,5 +1,15 @@
 import { router, usePathname } from "expo-router";
-import { FolderPlus, History, Home, Plus, Search, Server, Settings, X } from "lucide-react-native";
+import {
+  Bot,
+  FolderPlus,
+  History,
+  Home,
+  Plus,
+  Search,
+  Server,
+  Settings,
+  X,
+} from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
@@ -54,6 +64,7 @@ import {
 import { useWindowControlsPadding } from "@/utils/desktop-window";
 import { canCloseLeftSidebarGesture } from "@/utils/sidebar-animation-state";
 import {
+  buildHermesRoute,
   buildOpenProjectRoute,
   buildNewWorkspaceRoute,
   buildSessionsRoute,
@@ -90,6 +101,7 @@ interface SidebarSharedProps {
   handleRefresh: () => void;
   handleOpenProject: () => void;
   handleHome: () => void;
+  handleHermes: () => void;
   handleSettings: () => void;
   labels: SidebarLabels;
   newWorkspaceKeys: ShortcutKey[][] | null;
@@ -101,6 +113,7 @@ interface SidebarLabels {
   addProject: string;
   newWorkspace: string;
   home: string;
+  hermes: string;
   settings: string;
   switchHost: string;
   searchHosts: string;
@@ -168,6 +181,9 @@ export const LeftSidebar = memo(function LeftSidebar({
   }, [isRevalidating, isManualRefresh]);
 
   const openProjectPicker = useOpenProjectPicker();
+  const hosts = useHosts();
+  const activeWorkspaceSelection = useActiveWorkspaceSelection();
+  const activeHermesServerId = activeWorkspaceSelection?.serverId ?? hosts[0]?.serverId ?? null;
 
   const handleOpenProjectMobile = useCallback(() => {
     showMobileAgent();
@@ -217,6 +233,21 @@ export const LeftSidebar = memo(function LeftSidebar({
     router.push(buildOpenProjectRoute());
   }, []);
 
+  const handleHermesMobile = useCallback(() => {
+    if (!activeHermesServerId) {
+      return;
+    }
+    showMobileAgent();
+    router.push(buildHermesRoute(activeHermesServerId));
+  }, [activeHermesServerId, showMobileAgent]);
+
+  const handleHermesDesktop = useCallback(() => {
+    if (!activeHermesServerId) {
+      return;
+    }
+    router.push(buildHermesRoute(activeHermesServerId));
+  }, [activeHermesServerId]);
+
   const handleViewMoreNavigate = useCallback(() => {
     router.push(buildSessionsRoute());
   }, []);
@@ -227,6 +258,7 @@ export const LeftSidebar = memo(function LeftSidebar({
       addProject: t("sidebar.actions.addProject"),
       newWorkspace: t("sidebar.actions.newWorkspace"),
       home: t("sidebar.actions.home"),
+      hermes: "Hermes",
       settings: t("sidebar.actions.settings"),
       switchHost: t("sidebar.host.switchTitle"),
       searchHosts: t("sidebar.host.searchPlaceholder"),
@@ -263,6 +295,7 @@ export const LeftSidebar = memo(function LeftSidebar({
         closeSidebar={showMobileAgent}
         handleOpenProject={handleOpenProjectMobile}
         handleHome={handleHomeMobile}
+        handleHermes={handleHermesMobile}
         handleSettings={handleSettingsMobile}
         handleAddHost={handleAddHostMobile}
         handleOpenHostSettings={handleOpenHostSettingsMobile}
@@ -278,6 +311,7 @@ export const LeftSidebar = memo(function LeftSidebar({
       isOpen={isOpen}
       handleOpenProject={handleOpenProjectDesktop}
       handleHome={handleHomeDesktop}
+      handleHermes={handleHermesDesktop}
       handleSettings={handleSettingsDesktop}
       handleAddHost={handleAddHostDesktop}
       handleOpenHostSettings={handleOpenHostSettingsDesktop}
@@ -470,6 +504,7 @@ function SidebarFooter({
   theme,
   handleOpenProject,
   handleHome,
+  handleHermes,
   handleSettings,
   labels,
   handleAddHost,
@@ -478,10 +513,12 @@ function SidebarFooter({
   theme: SidebarTheme;
   handleOpenProject: () => void;
   handleHome: () => void;
+  handleHermes: () => void;
   handleSettings: () => void;
   labels: {
     addProject: string;
     home: string;
+    hermes: string;
     settings: string;
     switchHost: string;
     searchHosts: string;
@@ -521,6 +558,13 @@ function SidebarFooter({
           theme={theme}
         />
         <FooterIconButton
+          onPress={handleHermes}
+          testID="sidebar-hermes"
+          accessibilityLabel={labels.hermes}
+          icon={Bot}
+          theme={theme}
+        />
+        <FooterIconButton
           onPress={handleSettings}
           testID="sidebar-settings"
           accessibilityLabel={labels.settings}
@@ -548,6 +592,7 @@ function MobileSidebar({
   newWorkspaceKeys,
   handleOpenProject,
   handleHome,
+  handleHermes,
   handleSettings,
   labels,
   handleAddHost,
@@ -792,6 +837,7 @@ function MobileSidebar({
               theme={theme}
               handleOpenProject={handleOpenProject}
               handleHome={handleHome}
+              handleHermes={handleHermes}
               handleSettings={handleSettings}
               labels={labels}
               handleAddHost={handleAddHost}
@@ -820,6 +866,7 @@ function DesktopSidebar({
   newWorkspaceKeys,
   handleOpenProject,
   handleHome,
+  handleHermes,
   handleSettings,
   labels,
   handleAddHost,
@@ -936,6 +983,7 @@ function DesktopSidebar({
           theme={theme}
           handleOpenProject={handleOpenProject}
           handleHome={handleHome}
+          handleHermes={handleHermes}
           handleSettings={handleSettings}
           labels={labels}
           handleAddHost={handleAddHost}

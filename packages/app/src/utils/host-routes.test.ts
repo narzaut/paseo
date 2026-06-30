@@ -8,6 +8,7 @@ import {
   buildOpenProjectRoute,
   resolveKnownHostRoute,
   buildSessionsRoute,
+  buildHermesRoute,
   buildSettingsAddHostRoute,
   buildProjectSettingsRoute,
   buildProjectsSettingsRoute,
@@ -218,6 +219,10 @@ describe("projects settings routes", () => {
 describe("global routes", () => {
   it("buildSessionsRoute returns the all-host Sessions route", () => {
     expect(buildSessionsRoute()).toBe("/sessions");
+  });
+
+  it("buildHermesRoute returns the host-level Hermes route", () => {
+    expect(buildHermesRoute("srv-1")).toBe("/h/srv-1/hermes");
   });
 
   it("buildNewWorkspaceRoute returns the all-host New Workspace route", () => {

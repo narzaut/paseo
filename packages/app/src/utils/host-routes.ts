@@ -411,6 +411,14 @@ export function buildHostSessionsRoute(serverId: string) {
   return `${base}/sessions` as const;
 }
 
+export function buildHermesRoute(serverId?: string | null): string {
+  const normalized = trimNonEmpty(serverId);
+  if (!normalized) {
+    return "/";
+  }
+  return `/h/${encodeSegment(normalized)}/hermes`;
+}
+
 export function buildSessionsRoute() {
   return "/sessions" as const;
 }

@@ -410,6 +410,7 @@ type ChatDeletePayload = Extract<
   { type: "chat/delete/response" }
 >["payload"];
 type ChatPostPayload = Extract<SessionOutboundMessage, { type: "chat/post/response" }>["payload"];
+type ChatEditPayload = Extract<SessionOutboundMessage, { type: "chat/edit/response" }>["payload"];
 type ChatReadPayload = Extract<SessionOutboundMessage, { type: "chat/read/response" }>["payload"];
 type ChatWaitPayload = Extract<SessionOutboundMessage, { type: "chat/wait/response" }>["payload"];
 type LoopRunPayload = Extract<SessionOutboundMessage, { type: "loop/run/response" }>["payload"];
@@ -605,7 +606,16 @@ export interface ReadChatMessagesOptions {
 export interface WaitForChatMessagesOptions {
   room: string;
   afterMessageId?: string | null;
+  // Edit-aware cursor: when set, the daemon returns messages with seq > afterSeq
+  // (new OR edited). Takes precedence over afterMessageId on the daemon.
+  afterSeq?: number;
   timeoutMs?: number;
+  requestId?: string;
+}
+export interface EditChatMessageOptions {
+  room: string;
+  messageId: string;
+  body: string;
   requestId?: string;
 }
 export interface RunLoopOptions {
@@ -4394,10 +4404,24 @@ export class DaemonClient {
         type: "chat/wait",
         room: options.room,
         ...(options.afterMessageId ? { afterMessageId: options.afterMessageId } : {}),
+        ...(typeof options.afterSeq === "number" ? { afterSeq: options.afterSeq } : {}),
         ...(typeof options.timeoutMs === "number" ? { timeoutMs: options.timeoutMs } : {}),
       },
       responseType: "chat/wait/response",
       timeout: (options.timeoutMs ?? 0) + 10000,
+    });
+  }
+
+  async editChatMessage(options: EditChatMessageOptions): Promise<ChatEditPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "chat/edit",
+        room: options.room,
+        messageId: options.messageId,
+        body: options.body,
+      },
+      responseType: "chat/edit/response",
     });
   }
 

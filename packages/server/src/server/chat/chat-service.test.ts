@@ -188,4 +188,121 @@ describe("FileBackedChatService", () => {
     ).toEqual(["agent-a", "agent_b", "everyone"]);
     expect(parseMentionAgentIds("email@example.com is not a mention")).toEqual([]);
   });
+
+  test("assigns a monotonic seq on post and bumps it on edit, preserving createdAt", async () => {
+    const room = await service.createRoom({ name: "stream" });
+    const first = await sendChatMessage({
+      room: room.id,
+      authorAgentId: "hermes",
+      body: "partial",
+    });
+    const second = await sendChatMessage({ room: room.id, authorAgentId: "hermes", body: "other" });
+    expect(first.seq).toBe(1);
+    expect(second.seq).toBe(2);
+
+    const edited = await service.editMessage({
+      room: room.id,
+      messageId: first.id,
+      body: "partial → full",
+    });
+    expect(edited.id).toBe(first.id);
+    expect(edited.body).toBe("partial → full");
+    expect(edited.createdAt).toBe(first.createdAt); // anchored in the timeline
+    expect(edited.seq).toBe(3); // floated past every prior cursor
+    expect(edited.updatedAt).not.toBe(first.updatedAt);
+  });
+
+  test("rejects editing a missing message", async () => {
+    const room = await service.createRoom({ name: "stream" });
+    await expect(
+      service.editMessage({ room: room.id, messageId: "nope", body: "x" }),
+    ).rejects.toMatchObject<Partial<ChatServiceError>>({ code: "chat_message_not_found" });
+  });
+
+  test("afterSeq wait resolves with an edited message that a positional cursor would miss", async () => {
+    const room = await service.createRoom({ name: "stream" });
+    const message = await sendChatMessage({ room: room.id, authorAgentId: "hermes", body: "a" });
+
+    // Client has seen up to message.seq. A positional afterMessageId cursor on
+    // this same message would never see the edit; the seq cursor does.
+    const waitPromise = service.waitForMessages({
+      room: room.id,
+      afterSeq: message.seq,
+      timeoutMs: 1000,
+    });
+    const edited = await service.editMessage({ room: room.id, messageId: message.id, body: "ab" });
+    const delivered = await waitPromise;
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]?.id).toBe(message.id);
+    expect(delivered[0]?.body).toBe("ab");
+    expect(delivered[0]?.seq).toBe(edited.seq);
+  });
+
+  test("afterSeq wait returns immediately when newer messages already exist", async () => {
+    const room = await service.createRoom({ name: "stream" });
+    const first = await sendChatMessage({ room: room.id, authorAgentId: "hermes", body: "a" });
+    await sendChatMessage({ room: room.id, authorAgentId: "hermes", body: "b" });
+    const delivered = await service.waitForMessages({ room: room.id, afterSeq: first.seq });
+    expect(delivered.map((m) => m.body)).toEqual(["b"]);
+  });
+
+  test("backfills seq for a legacy store that predates the edit protocol", async () => {
+    const legacy = {
+      rooms: [
+        {
+          id: "room-1",
+          name: "legacy",
+          purpose: null,
+          createdAt: "2026-06-30T00:00:00.000Z",
+          updatedAt: "2026-06-30T00:00:02.000Z",
+        },
+      ],
+      messages: [
+        {
+          id: "m-2",
+          roomId: "room-1",
+          authorAgentId: "hermes",
+          body: "second",
+          replyToMessageId: null,
+          mentionAgentIds: [],
+          createdAt: "2026-06-30T00:00:02.000Z",
+        },
+        {
+          id: "m-1",
+          roomId: "room-1",
+          authorAgentId: "manual",
+          body: "first",
+          replyToMessageId: null,
+          mentionAgentIds: [],
+          createdAt: "2026-06-30T00:00:01.000Z",
+        },
+      ],
+    };
+    const legacyHome = await mkdtemp(path.join(tmpdir(), "paseo-chat-legacy-"));
+    await import("node:fs/promises").then((fs) =>
+      fs.mkdir(path.join(legacyHome, "chat"), { recursive: true }),
+    );
+    await import("node:fs/promises").then((fs) =>
+      fs.writeFile(path.join(legacyHome, "chat", "rooms.json"), JSON.stringify(legacy), "utf8"),
+    );
+    const legacyService = new FileBackedChatService({
+      paseoHome: legacyHome,
+      logger: pino({ level: "silent" }),
+    });
+    await legacyService.initialize();
+
+    // seq filled in createdAt order (m-1 before m-2), and a fresh post continues
+    // the sequence past the backfilled max.
+    const next = await legacyService.dispatchMessage({
+      room: "room-1",
+      authorAgentId: "hermes",
+      body: "third",
+    });
+    expect(next.seq).toBe(3);
+    const all = await legacyService.readMessages({ room: "room-1", limit: 0 });
+    const byId = new Map(all.map((m) => [m.id, m.seq]));
+    expect(byId.get("m-1")).toBe(1);
+    expect(byId.get("m-2")).toBe(2);
+    await rm(legacyHome, { recursive: true, force: true });
+  });
 });

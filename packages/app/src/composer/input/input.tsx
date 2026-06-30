@@ -284,6 +284,10 @@ function AttachmentDropdown({
   const [isSheetOpen, setIsSheetOpen] = useState(false);
   useDismissKeyboardOnOpen(isSheetOpen, isCompact);
 
+  if (attachmentMenuItems.length === 0) {
+    return null;
+  }
+
   const isButtonDisabled = !isConnected || disabled;
   const attachmentSheetHeader = useMemo<SheetHeader>(
     () => ({ title: addAttachmentLabel }),

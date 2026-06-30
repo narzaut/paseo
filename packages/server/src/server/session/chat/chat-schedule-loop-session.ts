@@ -206,6 +206,28 @@ export class ChatScheduleLoopSession {
     }
   }
 
+  async handleChatEditRequest(
+    request: Extract<SessionInboundMessage, { type: "chat/edit" }>,
+  ): Promise<void> {
+    try {
+      const message = await this.chatService.editMessage({
+        room: request.room,
+        messageId: request.messageId,
+        body: request.body,
+      });
+      this.host.emit({
+        type: "chat/edit/response",
+        payload: {
+          requestId: request.requestId,
+          message,
+          error: null,
+        },
+      });
+    } catch (error) {
+      this.emitChatRpcError(request, error);
+    }
+  }
+
   async handleChatReadRequest(
     request: Extract<SessionInboundMessage, { type: "chat/read" }>,
   ): Promise<void> {
@@ -236,6 +258,7 @@ export class ChatScheduleLoopSession {
       const messages = await this.chatService.waitForMessages({
         room: request.room,
         afterMessageId: request.afterMessageId,
+        afterSeq: request.afterSeq,
         timeoutMs: request.timeoutMs,
       });
       this.host.emit({

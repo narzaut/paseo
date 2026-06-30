@@ -58,6 +58,9 @@ export class ChatServiceError extends Error {
 interface Waiter {
   roomId: string;
   afterMessageId: string | null;
+  // Edit-aware cursor. When non-null, the waiter resolves with messages whose
+  // seq > afterSeq (new OR edited), and afterMessageId is ignored.
+  afterSeq: number | null;
   resolve: (messages: ChatMessage[]) => void;
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout> | null;
@@ -83,6 +86,12 @@ export interface PostChatMessageInput {
   replyToMessageId?: string | null;
 }
 
+export interface EditChatMessageInput {
+  room: string;
+  messageId: string;
+  body: string;
+}
+
 export interface ReadChatMessagesInput {
   room: string;
   limit?: number;
@@ -97,6 +106,7 @@ export interface ListChatRoomPosterAgentIdsInput {
 export interface WaitForChatMessagesInput {
   room: string;
   afterMessageId?: string | null;
+  afterSeq?: number;
   timeoutMs?: number;
 }
 
@@ -116,6 +126,10 @@ export class FileBackedChatService {
   private readonly messagesByRoomId = new Map<string, ChatMessage[]>();
   private persistQueue: Promise<void> = Promise.resolve();
   private readonly waitersByRoomId = new Map<string, Set<Waiter>>();
+  // Monotonic, server-assigned sequence shared across all rooms. Bumped on
+  // every create AND edit so an edit-aware `chat/wait` (afterSeq) re-delivers
+  // edited messages. Seeded from the persisted store on load.
+  private seqCounter = 0;
 
   constructor(options: { paseoHome: string; logger: pino.Logger }) {
     this.filePath = path.join(options.paseoHome, "chat", "rooms.json");
@@ -214,6 +228,8 @@ export class FileBackedChatService {
       replyToMessageId,
       mentionAgentIds: parseMentionAgentIds(body),
       createdAt,
+      updatedAt: createdAt,
+      seq: (this.seqCounter += 1),
     });
 
     messages.push(message);
@@ -228,6 +244,42 @@ export class FileBackedChatService {
     await this.enqueuePersist();
     this.notifyWaiters(room.id);
     return message;
+  }
+
+  async editMessage(input: EditChatMessageInput): Promise<ChatMessage> {
+    await this.load();
+    const room = this.resolveRoom(input.room);
+    const body = input.body.trim();
+    if (body.length === 0) {
+      throw new ChatServiceError("invalid_chat_message", "Chat message body is required");
+    }
+
+    const messages = this.getRoomMessages(room.id);
+    const index = messages.findIndex((message) => message.id === input.messageId);
+    if (index === -1) {
+      throw new ChatServiceError(
+        "chat_message_not_found",
+        `Message to edit not found: ${input.messageId}`,
+      );
+    }
+
+    const updatedAt = new Date().toISOString();
+    // Bumping seq floats the edited message past every existing wait cursor so
+    // afterSeq waiters re-deliver it; createdAt is preserved so the message
+    // keeps its place in the client's chronological view while its body grows.
+    const updated = ChatMessageSchema.parse({
+      ...messages[index],
+      body,
+      mentionAgentIds: parseMentionAgentIds(body),
+      updatedAt,
+      seq: (this.seqCounter += 1),
+    });
+    messages[index] = updated;
+    this.messagesByRoomId.set(room.id, messages);
+    this.rooms.set(room.id, ChatRoomSchema.parse({ ...room, updatedAt }));
+    await this.enqueuePersist();
+    this.notifyWaiters(room.id);
+    return updated;
   }
 
   async readMessages(input: ReadChatMessagesInput): Promise<ChatMessage[]> {
@@ -268,8 +320,21 @@ export class FileBackedChatService {
     await this.load();
     const room = this.resolveRoom(input.room);
     const timeoutMs = Math.max(0, Math.floor(input.timeoutMs ?? 0));
-    const afterMessageId = trimToNull(input.afterMessageId);
 
+    // Edit-aware seq cursor takes precedence: returns new AND edited messages.
+    if (input.afterSeq !== undefined) {
+      const existing = this.selectMessagesAfterSeq(room.id, input.afterSeq);
+      if (existing.length > 0) {
+        return existing;
+      }
+      return this.registerWaiter(room.id, {
+        afterMessageId: null,
+        afterSeq: input.afterSeq,
+        timeoutMs,
+      });
+    }
+
+    const afterMessageId = trimToNull(input.afterMessageId);
     if (afterMessageId) {
       const existing = this.selectMessagesAfter(room.id, afterMessageId);
       if (existing.length > 0) {
@@ -286,10 +351,18 @@ export class FileBackedChatService {
       }
     }
 
+    return this.registerWaiter(room.id, { afterMessageId, afterSeq: null, timeoutMs });
+  }
+
+  private registerWaiter(
+    roomId: string,
+    cursor: { afterMessageId: string | null; afterSeq: number | null; timeoutMs: number },
+  ): Promise<ChatMessage[]> {
     return new Promise<ChatMessage[]>((resolve, reject) => {
       const waiter: Waiter = {
-        roomId: room.id,
-        afterMessageId,
+        roomId,
+        afterMessageId: cursor.afterMessageId,
+        afterSeq: cursor.afterSeq,
         resolve: (messages) => {
           if (waiter.timeout) {
             clearTimeout(waiter.timeout);
@@ -309,15 +382,15 @@ export class FileBackedChatService {
         timeout: null,
       };
 
-      if (timeoutMs > 0) {
+      if (cursor.timeoutMs > 0) {
         waiter.timeout = setTimeout(() => {
           waiter.resolve([]);
-        }, timeoutMs);
+        }, cursor.timeoutMs);
       }
 
-      const roomWaiters = this.waitersByRoomId.get(room.id) ?? new Set<Waiter>();
+      const roomWaiters = this.waitersByRoomId.get(roomId) ?? new Set<Waiter>();
       roomWaiters.add(waiter);
-      this.waitersByRoomId.set(room.id, roomWaiters);
+      this.waitersByRoomId.set(roomId, roomWaiters);
     });
   }
 
@@ -340,6 +413,7 @@ export class FileBackedChatService {
         messages.push(message);
         this.messagesByRoomId.set(message.roomId, messages);
       }
+      this.backfillSeq(parsed.messages);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT") {
@@ -424,6 +498,22 @@ export class FileBackedChatService {
     return messages.slice(index + 1);
   }
 
+  private selectMessagesAfterSeq(roomId: string, afterSeq: number): ChatMessage[] {
+    return this.getRoomMessages(roomId)
+      .filter((message) => (message.seq ?? 0) > afterSeq)
+      .sort((left, right) => (left.seq ?? 0) - (right.seq ?? 0));
+  }
+
+  private resolveWaiterMessages(waiter: Waiter): ChatMessage[] {
+    if (waiter.afterSeq !== null) {
+      return this.selectMessagesAfterSeq(waiter.roomId, waiter.afterSeq);
+    }
+    if (waiter.afterMessageId === null) {
+      return this.getRoomMessages(waiter.roomId).slice(-1);
+    }
+    return this.selectMessagesAfter(waiter.roomId, waiter.afterMessageId);
+  }
+
   private notifyWaiters(roomId: string): void {
     const waiters = this.waitersByRoomId.get(roomId);
     if (!waiters || waiters.size === 0) {
@@ -431,15 +521,38 @@ export class FileBackedChatService {
     }
 
     for (const waiter of Array.from(waiters)) {
-      const messages =
-        waiter.afterMessageId === null
-          ? this.getRoomMessages(roomId).slice(-1)
-          : this.selectMessagesAfter(roomId, waiter.afterMessageId);
+      const messages = this.resolveWaiterMessages(waiter);
       if (messages.length === 0) {
         continue;
       }
       waiter.resolve(messages);
     }
+  }
+
+  /**
+   * Assign a seq (and updatedAt) to any persisted message that predates the
+   * edit-aware protocol, so the in-memory store always has a monotonic cursor.
+   * Existing seqs are honored; missing ones are filled in createdAt order after
+   * the current max. Seeds {@link seqCounter} to the highest seq seen.
+   */
+  private backfillSeq(messages: ChatMessage[]): void {
+    let maxSeq = 0;
+    for (const message of messages) {
+      if (typeof message.seq === "number") {
+        maxSeq = Math.max(maxSeq, message.seq);
+      }
+    }
+    const missing = messages
+      .filter((message) => typeof message.seq !== "number")
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    for (const message of missing) {
+      maxSeq += 1;
+      message.seq = maxSeq;
+      if (message.updatedAt === undefined) {
+        message.updatedAt = message.createdAt;
+      }
+    }
+    this.seqCounter = maxSeq;
   }
 
   private removeWaiter(waiter: Waiter): void {

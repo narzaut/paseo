@@ -1687,6 +1687,8 @@ export class Session {
         return this.chatScheduleLoopSession.handleChatDeleteRequest(msg);
       case "chat/post":
         return this.chatScheduleLoopSession.handleChatPostRequest(msg);
+      case "chat/edit":
+        return this.chatScheduleLoopSession.handleChatEditRequest(msg);
       case "chat/read":
         return this.chatScheduleLoopSession.handleChatReadRequest(msg);
       case "chat/wait":
