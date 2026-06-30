@@ -1,6 +1,7 @@
 import { router, usePathname } from "expo-router";
 import {
   Bot,
+  CalendarClock,
   FolderPlus,
   History,
   Home,
@@ -67,6 +68,7 @@ import {
   buildHermesRoute,
   buildOpenProjectRoute,
   buildNewWorkspaceRoute,
+  buildSchedulesRoute,
   buildSessionsRoute,
   buildSettingsAddHostRoute,
   buildSettingsHostSectionRoute,
@@ -118,6 +120,7 @@ interface SidebarLabels {
   switchHost: string;
   searchHosts: string;
   sessions: string;
+  schedules: string;
   closeSidebar: string;
 }
 
@@ -127,12 +130,14 @@ interface MobileSidebarProps extends SidebarSharedProps {
   isOpen: boolean;
   closeSidebar: () => void;
   handleViewMoreNavigate: () => void;
+  handleViewSchedulesNavigate: () => void;
 }
 
 interface DesktopSidebarProps extends SidebarSharedProps {
   insetsTop: number;
   isOpen: boolean;
   handleViewMore: () => void;
+  handleViewSchedules: () => void;
 }
 
 export const LeftSidebar = memo(function LeftSidebar({
@@ -252,6 +257,10 @@ export const LeftSidebar = memo(function LeftSidebar({
     router.push(buildSessionsRoute());
   }, []);
 
+  const handleViewSchedulesNavigate = useCallback(() => {
+    router.push(buildSchedulesRoute());
+  }, []);
+
   const newWorkspaceKeys = useShortcutKeys("new-workspace");
   const labels = useMemo(
     (): SidebarLabels => ({
@@ -263,6 +272,7 @@ export const LeftSidebar = memo(function LeftSidebar({
       switchHost: t("sidebar.host.switchTitle"),
       searchHosts: t("sidebar.host.searchPlaceholder"),
       sessions: t("sidebar.sections.sessions"),
+      schedules: t("sidebar.sections.schedules"),
       closeSidebar: t("sidebar.actions.closeSidebar"),
     }),
     [t],
@@ -300,6 +310,7 @@ export const LeftSidebar = memo(function LeftSidebar({
         handleAddHost={handleAddHostMobile}
         handleOpenHostSettings={handleOpenHostSettingsMobile}
         handleViewMoreNavigate={handleViewMoreNavigate}
+        handleViewSchedulesNavigate={handleViewSchedulesNavigate}
       />
     );
   }
@@ -316,6 +327,7 @@ export const LeftSidebar = memo(function LeftSidebar({
       handleAddHost={handleAddHostDesktop}
       handleOpenHostSettings={handleOpenHostSettingsDesktop}
       handleViewMore={handleViewMoreNavigate}
+      handleViewSchedules={handleViewSchedulesNavigate}
     />
   );
 });
@@ -602,9 +614,11 @@ function MobileSidebar({
   isOpen,
   closeSidebar,
   handleViewMoreNavigate,
+  handleViewSchedulesNavigate,
 }: MobileSidebarProps) {
   const pathname = usePathname();
   const isSessionsActive = pathname.includes("/sessions");
+  const isSchedulesActive = pathname.includes("/schedules");
   const {
     translateX,
     backdropOpacity,
@@ -631,6 +645,13 @@ function MobileSidebar({
     closeSidebar();
     handleViewMoreNavigate();
   }, [backdropOpacity, closeSidebar, handleViewMoreNavigate, translateX, windowWidth]);
+
+  const handleViewSchedules = useCallback(() => {
+    translateX.value = -windowWidth;
+    backdropOpacity.value = 0;
+    closeSidebar();
+    handleViewSchedulesNavigate();
+  }, [backdropOpacity, closeSidebar, handleViewSchedulesNavigate, translateX, windowWidth]);
 
   const handleWorkspacePress = useCallback(() => {
     closeSidebar();
@@ -792,6 +813,14 @@ function MobileSidebar({
                 testID="sidebar-sessions"
                 variant="compact"
               />
+              <SidebarHeaderRow
+                icon={CalendarClock}
+                label={labels.schedules}
+                onPress={handleViewSchedules}
+                isActive={isSchedulesActive}
+                testID="sidebar-schedules"
+                variant="compact"
+              />
             </View>
             <WorkspacesSectionHeader />
             <Pressable
@@ -874,9 +903,11 @@ function DesktopSidebar({
   insetsTop,
   isOpen,
   handleViewMore,
+  handleViewSchedules,
 }: DesktopSidebarProps) {
   const pathname = usePathname();
   const isSessionsActive = pathname.includes("/sessions");
+  const isSchedulesActive = pathname.includes("/schedules");
   const padding = useWindowControlsPadding("sidebar");
   const sidebarWidth = usePanelStore((state) => state.sidebarWidth);
   const setSidebarWidth = usePanelStore((state) => state.setSidebarWidth);
@@ -954,6 +985,14 @@ function DesktopSidebar({
               onPress={handleViewMore}
               isActive={isSessionsActive}
               testID="sidebar-sessions"
+              variant="compact"
+            />
+            <SidebarHeaderRow
+              icon={CalendarClock}
+              label={labels.schedules}
+              onPress={handleViewSchedules}
+              isActive={isSchedulesActive}
+              testID="sidebar-schedules"
               variant="compact"
             />
           </View>

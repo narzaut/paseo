@@ -87,6 +87,7 @@ import { polyfillCrypto } from "@/polyfills/crypto";
 import { queryClient } from "@/query/query-client";
 import {
   getHostRuntimeStore,
+  hasConfiguredLocalDaemonOverride,
   useHostRegistryLoaded,
   useHostMutations,
   useHostRuntimeClient,
@@ -311,6 +312,9 @@ const STARTUP_GIVE_UP_TIMEOUT_MS = 5_000;
 
 async function shouldStartBuiltInDaemon(): Promise<boolean> {
   if (!shouldUseDesktopDaemon()) {
+    return false;
+  }
+  if (hasConfiguredLocalDaemonOverride()) {
     return false;
   }
   const settings = await loadDesktopSettings();
@@ -889,6 +893,7 @@ function AppWithSidebar({ children }: { children: ReactNode }) {
     (pathname === "/open-project" ||
       pathname === "/new" ||
       pathname === "/sessions" ||
+      pathname === "/schedules" ||
       routeHasKnownHost);
 
   // Parse selectedAgentKey directly from pathname
@@ -947,6 +952,7 @@ function RootStack() {
         <Stack.Screen name="new" />
         <Stack.Screen name="open-project" />
         <Stack.Screen name="sessions" />
+        <Stack.Screen name="schedules" />
         <Stack.Screen name="pair-scan" />
       </Stack.Protected>
       <Stack.Screen name="h/[serverId]" />
