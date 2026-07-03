@@ -1,35 +1,111 @@
-import { mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
-import type { WebContents } from "electron";
+import type { Rectangle } from "electron";
 import { ipcMain } from "electron";
 import { BrowserAutomationExecuteRequestSchema } from "@getpaseo/protocol/browser-automation/rpc-schemas";
-import type {
-  BrowserAutomationConsoleLogEntry,
-  BrowserAutomationCookieEntry,
-} from "@getpaseo/protocol/browser-automation/rpc-schemas";
-import type { TabContents, BrowserRegistry } from "./service.js";
+import type { BrowserAutomationConsoleLogEntry } from "@getpaseo/protocol/browser-automation/rpc-schemas";
+import type { TabContents, BrowserRegistry, TabImage } from "./service.js";
 import { executeAutomationCommand } from "./service.js";
 import {
   listRegisteredPaseoBrowserIds,
   listRegisteredPaseoBrowserIdsForWorkspace,
   getPaseoBrowserWebContents,
-  getWorkspaceActivePaseoBrowserWebContents,
   getWorkspaceActivePaseoBrowserId,
-  getAgentActivePaseoBrowserId,
   getPaseoBrowserWorkspaceId,
 } from "../browser-webviews/index.js";
 
 const MAX_CONSOLE_MESSAGES_PER_TAB = 200;
+const PIXEL_CAPTURE_BRIDGE_TIMEOUT_MS = 5_000;
 const consoleMessagesByContentsId = new Map<number, BrowserAutomationConsoleLogEntry[]>();
 const observedContentsIds = new Set<number>();
+let nextPixelCaptureBridgeRequest = 0;
 
 interface IpcHandlerRegistry {
   handle(channel: string, listener: (event: unknown, ...args: unknown[]) => unknown): void;
 }
 
-function adaptWebContents(contents: WebContents): TabContents {
+interface IpcBridgeEvent {
+  sender?: {
+    id?: number;
+  };
+}
+
+type IpcListener = (event: IpcBridgeEvent, payload: unknown) => void;
+
+interface IpcCaptureBridge {
+  on(channel: string, listener: IpcListener): void;
+  removeListener(channel: string, listener: IpcListener): void;
+}
+
+interface HostWebContents {
+  readonly id: number;
+  isDestroyed(): boolean;
+  send(channel: string, payload: unknown): void;
+}
+
+interface WebContentsDebugger {
+  isAttached(): boolean;
+  attach(protocolVersion?: string): void;
+  sendCommand(command: string, params?: Record<string, unknown>): Promise<unknown>;
+}
+
+interface ConsoleMessageEmitter {
+  on(
+    event: "console-message",
+    listener: (
+      event: unknown,
+      level: unknown,
+      message: unknown,
+      line: unknown,
+      sourceId: unknown,
+    ) => void,
+  ): void;
+  once(event: "destroyed", listener: () => void): void;
+}
+
+interface BrowserAutomationWebContents extends ConsoleMessageEmitter {
+  readonly id: number;
+  readonly hostWebContents: HostWebContents | null;
+  readonly debugger: WebContentsDebugger;
+  getURL(): string;
+  getTitle(): string;
+  canGoBack(): boolean;
+  canGoForward(): boolean;
+  isLoading(): boolean;
+  isDestroyed(): boolean;
+  executeJavaScript(code: string): Promise<unknown>;
+  loadURL(url: string): Promise<void>;
+  goBack(): void;
+  goForward(): void;
+  reload(): void;
+  capturePage(rect?: Rectangle, options?: { stayHidden?: boolean }): Promise<TabImage>;
+  invalidate(): void;
+  getBackgroundThrottling(): boolean;
+  setBackgroundThrottling(allowed: boolean): void;
+}
+
+type PixelCaptureBridgeKind = "prepare" | "restore";
+
+interface PixelCaptureBridgeSuccess {
+  token?: string;
+}
+
+interface PixelCaptureBridgeOptions {
+  ipc?: IpcCaptureBridge;
+  createRequestId?: () => string;
+  timeoutMs?: number;
+}
+
+interface PreparedPixelCapture {
+  browserId: string;
+  host: HostWebContents;
+}
+
+export function adaptWebContents(
+  contents: BrowserAutomationWebContents,
+  browserId: string,
+  options?: PixelCaptureBridgeOptions,
+): TabContents {
   observeConsoleMessages(contents);
+  const preparedPixelCapturesByToken = new Map<string, PreparedPixelCapture>();
   return {
     id: contents.id,
     getURL: () => contents.getURL(),
@@ -43,67 +119,176 @@ function adaptWebContents(contents: WebContents): TabContents {
     goBack: () => contents.goBack(),
     goForward: () => contents.goForward(),
     reload: () => contents.reload(),
-    capturePage: () => contents.capturePage(),
+    capturePage: (captureOptions) => contents.capturePage(undefined, captureOptions),
+    prepareForPixelCapture: async () => {
+      const host = getPixelCaptureHost(contents);
+      const result = await requestPixelCaptureBridge({ host, browserId, kind: "prepare", options });
+      if (!result.token) {
+        throw new Error("Browser pixel capture preparation did not return a token.");
+      }
+      preparedPixelCapturesByToken.set(result.token, { browserId, host });
+      return { token: result.token };
+    },
+    restorePixelCapture: async (preparation) => {
+      const prepared = preparedPixelCapturesByToken.get(preparation.token);
+      if (!prepared) {
+        throw new Error("Browser pixel capture preparation is no longer active.");
+      }
+      try {
+        await requestPixelCaptureBridge({
+          host: prepared.host,
+          browserId: prepared.browserId,
+          kind: "restore",
+          options,
+          extraPayload: { token: preparation.token },
+        });
+      } finally {
+        preparedPixelCapturesByToken.delete(preparation.token);
+      }
+    },
+    invalidate: () => contents.invalidate(),
+    isBackgroundThrottlingAllowed: () => contents.getBackgroundThrottling(),
+    setBackgroundThrottling: (allowed) => contents.setBackgroundThrottling(allowed),
     getConsoleMessages: () => consoleMessagesByContentsId.get(contents.id) ?? [],
-    getCookies: async (url: string) =>
-      (await contents.session.cookies.get({ url })).map(normalizeCookie),
     sendDebugCommand: async (command: string, params?: Record<string, unknown>) => {
       if (!contents.debugger.isAttached()) {
         contents.debugger.attach("1.3");
       }
       return contents.debugger.sendCommand(command, params ?? {});
     },
-    printToPDF: async (options?: Record<string, unknown>) => contents.printToPDF(options ?? {}),
-    downloadURL: (input) => downloadWithContents(contents, input),
   };
 }
 
-function downloadWithContents(
-  contents: WebContents,
-  input: { url: string; fileName?: string },
-): Promise<{ filePath: string; totalBytes?: number; state: string }> {
-  const downloadDir = join(tmpdir(), "paseo-browser-downloads");
-  mkdirSync(downloadDir, { recursive: true });
-  const filePath = join(downloadDir, sanitizeDownloadFileName(input));
+function getPixelCaptureHost(contents: BrowserAutomationWebContents): HostWebContents {
+  const host = contents.hostWebContents;
+  if (!host || host.isDestroyed()) {
+    throw new Error("Browser host renderer is not available.");
+  }
+  return host;
+}
+
+function requestPixelCaptureBridge(input: {
+  host: HostWebContents;
+  browserId: string;
+  kind: PixelCaptureBridgeKind;
+  options: PixelCaptureBridgeOptions | undefined;
+  extraPayload?: { token: string };
+}): Promise<PixelCaptureBridgeSuccess> {
+  const { host, browserId, kind, options, extraPayload } = input;
+  if (host.isDestroyed()) {
+    return Promise.reject(new Error("Browser host renderer is not available."));
+  }
+
+  const ipc = options?.ipc ?? ipcMain;
+  const requestId =
+    options?.createRequestId?.() ?? `browser-pixel-capture-${++nextPixelCaptureBridgeRequest}`;
+  const timeoutMs = options?.timeoutMs ?? PIXEL_CAPTURE_BRIDGE_TIMEOUT_MS;
+  const requestChannel =
+    kind === "prepare" ? "paseo:browser:capture-prepare" : "paseo:browser:capture-restore";
+  const responseChannel =
+    kind === "prepare" ? "paseo:browser:capture-prepared" : "paseo:browser:capture-restored";
+
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      contents.session.off("will-download", onDownload);
-      reject(new Error(`Timed out waiting for browser download: ${input.url}`));
-    }, 30_000);
-    function onDownload(_event: Electron.Event, item: Electron.DownloadItem): void {
-      if (item.getURL() !== input.url) {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      ipc.removeListener(responseChannel, listener);
+    };
+    const listener: IpcListener = (event, payload) => {
+      if (readSenderId(event) !== host.id) {
         return;
       }
-      clearTimeout(timeout);
-      contents.session.off("will-download", onDownload);
-      item.setSavePath(filePath);
-      item.once("done", (_doneEvent, state) => {
-        resolve({ filePath, totalBytes: item.getTotalBytes(), state });
+      const response = readPixelCaptureBridgeResponse(payload, requestId);
+      if (!response) {
+        return;
+      }
+      cleanup();
+      if (response.ok) {
+        resolve(response);
+      } else {
+        reject(new Error(response.message));
+      }
+    };
+
+    ipc.on(responseChannel, listener);
+    timeoutId = setTimeout(() => {
+      cleanup();
+      sendPixelCaptureCancel(host, {
+        requestId,
+        browserId,
+        ...(extraPayload ? { token: extraPayload.token } : {}),
       });
+      reject(new Error(`Browser pixel capture ${kind} timed out.`));
+    }, timeoutMs);
+
+    try {
+      host.send(requestChannel, {
+        requestId,
+        browserId,
+        ...(extraPayload ? { token: extraPayload.token } : {}),
+      });
+    } catch (error) {
+      cleanup();
+      reject(error);
     }
-    contents.session.on("will-download", onDownload);
-    contents.downloadURL(input.url);
   });
 }
 
-export function sanitizeDownloadFileName(input: { url: string; fileName?: string }): string {
-  const requestedName = input.fileName ?? basename(new URL(input.url).pathname);
-  return basename(requestedName) || "download";
+function sendPixelCaptureCancel(
+  host: HostWebContents,
+  payload: { browserId: string; requestId?: string; token?: string },
+): void {
+  if (host.isDestroyed()) {
+    return;
+  }
+  try {
+    host.send("paseo:browser:capture-cancel", payload);
+  } catch {
+    // The original prepare/restore request owns the user-visible error.
+  }
 }
 
-function normalizeCookie(cookie: Electron.Cookie): BrowserAutomationCookieEntry {
-  return {
-    name: cookie.name,
-    value: cookie.value,
-    ...(cookie.domain ? { domain: cookie.domain } : {}),
-    ...(cookie.path ? { path: cookie.path } : {}),
-    secure: cookie.secure,
-    httpOnly: cookie.httpOnly,
-    ...(typeof cookie.expirationDate === "number" ? { expirationDate: cookie.expirationDate } : {}),
-  };
+function readSenderId(event: IpcBridgeEvent): number | null {
+  const senderId = event.sender?.id;
+  return typeof senderId === "number" ? senderId : null;
 }
 
-function observeConsoleMessages(contents: WebContents): void {
+function readPixelCaptureBridgeResponse(
+  payload: unknown,
+  requestId: string,
+): ({ ok: true } & PixelCaptureBridgeSuccess) | { ok: false; message: string } | null {
+  if (!isRecord(payload)) {
+    return null;
+  }
+  const record = payload;
+  if (record.requestId !== requestId) {
+    return null;
+  }
+  if (record.ok === true) {
+    return {
+      ok: true,
+      ...(typeof record.token === "string" && record.token.length > 0
+        ? { token: record.token }
+        : {}),
+    };
+  }
+  if (record.ok === false) {
+    const message =
+      typeof record.message === "string" && record.message.length > 0
+        ? record.message
+        : "Browser pixel capture bridge failed.";
+    return { ok: false, message };
+  }
+  return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function observeConsoleMessages(contents: BrowserAutomationWebContents): void {
   if (observedContentsIds.has(contents.id)) {
     return;
   }
@@ -143,15 +328,10 @@ function createRegistry(): BrowserRegistry {
     listRegisteredBrowserIdsForWorkspace: listRegisteredPaseoBrowserIdsForWorkspace,
     getTabContents(browserId: string): TabContents | null {
       const contents = getPaseoBrowserWebContents(browserId);
-      return contents ? adaptWebContents(contents) : null;
+      return contents ? adaptWebContents(contents, browserId) : null;
     },
     getBrowserWorkspaceId: getPaseoBrowserWorkspaceId,
-    getWorkspaceActiveTabContents(workspaceId: string): TabContents | null {
-      const contents = getWorkspaceActivePaseoBrowserWebContents(workspaceId);
-      return contents ? adaptWebContents(contents) : null;
-    },
     getWorkspaceActiveBrowserId: getWorkspaceActivePaseoBrowserId,
-    getAgentActiveBrowserId: getAgentActivePaseoBrowserId,
   };
 }
 

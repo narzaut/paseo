@@ -121,6 +121,10 @@ export interface DesktopBrowserShortcutEvent {
   action: "focus-url";
 }
 
+export interface DesktopBrowserPixelCapturePreparation {
+  token: string;
+}
+
 export interface DesktopBrowserNewTabRequestEvent {
   sourceBrowserId: string;
   url: string;
@@ -132,7 +136,6 @@ export interface DesktopBrowserBridge {
     workspaceId: string;
     browserId: string | null;
   }) => Promise<void>;
-  setAgentActiveBrowser?: (input: { agentId: string; browserId: string | null }) => Promise<void>;
   openDevTools?: (browserId: string) => Promise<unknown>;
   clearPartition?: (browserId: string) => Promise<void>;
   executeAutomationCommand?: (
@@ -145,6 +148,18 @@ export interface DesktopBrowserBridge {
   ) => Promise<string | null>;
   /** Copy element text and/or an image to the system clipboard from main. */
   copyElement?: (payload: { text?: string; imageDataUrl?: string }) => Promise<boolean>;
+  onPrepareForPixelCapture?: (
+    handler: (input: {
+      requestId: string;
+      browserId: string;
+    }) => Promise<DesktopBrowserPixelCapturePreparation>,
+  ) => () => void;
+  onRestorePixelCapture?: (
+    handler: (input: DesktopBrowserPixelCapturePreparation) => Promise<void>,
+  ) => () => void;
+  onCancelPixelCapture?: (
+    handler: (input: { requestId?: string; token?: string }) => Promise<void>,
+  ) => () => void;
 }
 
 export interface DesktopInvokeBridge {
