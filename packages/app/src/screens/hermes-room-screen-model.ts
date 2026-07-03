@@ -5,11 +5,13 @@ import type { HermesRoomMessage } from "@/hooks/use-hermes-room";
 import {
   type HermesEventEnvelope,
   parseHermesEventEnvelope,
+  parseHermesGatewayStatus,
 } from "@/screens/hermes-event-envelope";
 
 export const HERMES_ROOM_AGENT_ID = "hermes-room";
 const HERMES_AUTHOR_ID = "hermes";
 const HERMES_ROOM_CWD = ".";
+const HERMES_RESTART_COMMAND = "/restart";
 // Synthetic provider id for Hermes tool-call cards. AgentProvider is a string;
 // the value only needs to be stable and non-empty for the stream view.
 const HERMES_PROVIDER = "hermes";
@@ -138,8 +140,10 @@ function mapEnvelopeToStreamItem(
   envelope: HermesEventEnvelope,
   message: HermesRoomMessage,
   timestamp: Date,
-): StreamItem {
+): StreamItem | null {
   switch (envelope._type) {
+    case "status":
+      return null;
     case "thought":
       return {
         kind: "thought",
@@ -185,29 +189,41 @@ function mapEnvelopeToStreamItem(
         message: envelope.message,
       } satisfies StreamItem;
   }
+  return null;
 }
 
 export function buildHermesRoomStreamItems(messages: HermesRoomMessage[]): StreamItem[] {
-  return messages.map((message) => {
+  return messages.flatMap((message) => {
     const timestamp = toTimestamp(message.createdAt);
     if (message.authorAgentId === HERMES_AUTHOR_ID) {
+      if (parseHermesGatewayStatus(message.body)) {
+        return [];
+      }
       const envelope = parseHermesEventEnvelope(message.body);
       if (envelope) {
-        return mapEnvelopeToStreamItem(envelope, message, timestamp);
+        const item = mapEnvelopeToStreamItem(envelope, message, timestamp);
+        return item ? [item] : [];
       }
-      return {
-        kind: "assistant_message",
+      return [
+        {
+          kind: "assistant_message",
+          id: message.id,
+          messageId: message.id,
+          text: message.body,
+          timestamp,
+        } satisfies StreamItem,
+      ];
+    }
+    if (message.body.trim() === HERMES_RESTART_COMMAND) {
+      return [];
+    }
+    return [
+      {
+        kind: "user_message",
         id: message.id,
-        messageId: message.id,
         text: message.body,
         timestamp,
-      } satisfies StreamItem;
-    }
-    return {
-      kind: "user_message",
-      id: message.id,
-      text: message.body,
-      timestamp,
-    } satisfies StreamItem;
+      } satisfies StreamItem,
+    ];
   });
 }

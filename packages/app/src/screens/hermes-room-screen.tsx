@@ -1,10 +1,15 @@
 import { useIsFocused } from "@react-navigation/native";
-import { memo, useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
+import { RotateCw } from "lucide-react-native";
 import { AgentStreamView } from "@/agent-stream/view";
 import { Composer } from "@/composer";
 import { ToastViewport, useToastHost } from "@/components/toast-host";
+import { Button } from "@/components/ui/button";
+import { ScreenHeader } from "@/components/headers/screen-header";
+import { ScreenTitle } from "@/components/headers/screen-title";
+import { SidebarMenuToggle } from "@/components/headers/menu-header";
 import type { UserComposerAttachment } from "@/attachments/types";
 import type { MessagePayload } from "@/composer/types";
 import type { HermesRoomMessage } from "@/hooks/use-hermes-room";
@@ -27,21 +32,110 @@ function updateAttachments(
   return typeof next === "function" ? next(previous) : next;
 }
 
+function getDotStyle(pendingRestart: boolean, gatewayStatus: "connected" | "disconnected") {
+  if (pendingRestart) return styles.gatewayStatusDotPending;
+  if (gatewayStatus === "connected") return styles.gatewayStatusDotConnected;
+  return styles.gatewayStatusDotDisconnected;
+}
+
+function getStatusText(pendingRestart: boolean, gatewayStatus: "connected" | "disconnected") {
+  if (pendingRestart) return "Restart requested";
+  if (gatewayStatus === "connected") return "Connected";
+  return "Disconnected";
+}
+
+function HermesRoomStatusFooter({
+  gatewayStatus,
+  pendingRestart,
+  onPressRestart,
+}: {
+  gatewayStatus: "connected" | "disconnected";
+  pendingRestart: boolean;
+  onPressRestart: () => void;
+}) {
+  return (
+    <View style={styles.gatewayFooterRow}>
+      <View style={styles.gatewayStatusRow}>
+        <View
+          style={[styles.gatewayStatusDot, getDotStyle(pendingRestart, gatewayStatus)]}
+        />
+        <Text style={styles.gatewayStatusText}>
+          {getStatusText(pendingRestart, gatewayStatus)}
+        </Text>
+      </View>
+      <Button
+        variant="ghost"
+        size="xs"
+        loading={pendingRestart}
+        disabled={pendingRestart}
+        leftIcon={RotateCw}
+        onPress={onPressRestart}
+        testID="hermes-room-restart-button"
+      >
+        {pendingRestart ? "Requested" : "Restart"}
+      </Button>
+    </View>
+  );
+}
+
 function HermesRoomReadyState({
   serverId,
   messages,
+  gatewayStatus,
   sendMessage,
 }: {
   serverId: string;
   messages: HermesRoomMessage[];
+  gatewayStatus: "connected" | "disconnected";
   sendMessage: (text: string) => Promise<void>;
 }) {
   const isFocused = useIsFocused();
   const { api: toastApi, toast, dismiss } = useToastHost();
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<UserComposerAttachment[]>([]);
+  const [pendingRestart, setPendingRestart] = useState(false);
+  const restartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const agent = useMemo(() => buildHermesRoomAgent(serverId), [serverId]);
   const streamItems = useMemo(() => buildHermesRoomStreamItems(messages), [messages]);
+
+  useEffect(() => {
+    if (gatewayStatus === "connected" && pendingRestart) {
+      setPendingRestart(false);
+      if (restartTimeoutRef.current) {
+        clearTimeout(restartTimeoutRef.current);
+        restartTimeoutRef.current = null;
+      }
+    }
+  }, [gatewayStatus, pendingRestart]);
+
+  useEffect(() => {
+    return () => {
+      if (restartTimeoutRef.current) {
+        clearTimeout(restartTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const handlePressRestart = useCallback(async () => {
+    if (pendingRestart) {
+      return;
+    }
+    setPendingRestart(true);
+    restartTimeoutRef.current = setTimeout(() => {
+      setPendingRestart(false);
+      restartTimeoutRef.current = null;
+    }, 15_000);
+    try {
+      await sendMessage("/restart");
+    } catch {
+      setPendingRestart(false);
+      if (restartTimeoutRef.current) {
+        clearTimeout(restartTimeoutRef.current);
+        restartTimeoutRef.current = null;
+      }
+      toastApi.error("Restart request failed");
+    }
+  }, [pendingRestart, sendMessage, toastApi]);
 
   const clearDraft = useCallback((_lifecycle: "sent" | "abandoned") => {
     setDraft("");
@@ -59,6 +153,17 @@ function HermesRoomReadyState({
     [],
   );
 
+  const footer = useMemo(
+    () => (
+      <HermesRoomStatusFooter
+        gatewayStatus={gatewayStatus}
+        pendingRestart={pendingRestart}
+        onPressRestart={handlePressRestart}
+      />
+    ),
+    [gatewayStatus, pendingRestart, handlePressRestart],
+  );
+
   const handleSubmitMessage = useCallback(
     async ({ text, attachments: outgoingAttachments }: MessagePayload) => {
       if (outgoingAttachments.length > 0) {
@@ -71,6 +176,14 @@ function HermesRoomReadyState({
 
   return (
     <View style={styles.root} testID="hermes-room-screen">
+      <ScreenHeader
+        left={
+          <>
+            <SidebarMenuToggle />
+            <ScreenTitle>Hermes</ScreenTitle>
+          </>
+        }
+      />
       <View style={styles.contentContainer}>
         <AgentStreamView
           agentId={HERMES_ROOM_AGENT_ID}
@@ -95,6 +208,7 @@ function HermesRoomReadyState({
         clearDraft={clearDraft}
         autoFocus={isFocused}
         attachmentMenuItemsOverride={HERMES_ATTACHMENT_MENU_ITEMS}
+        footer={footer}
       />
       <ToastViewport toast={toast} onDismiss={dismiss} placement="panel" />
     </View>
@@ -104,7 +218,7 @@ function HermesRoomReadyState({
 const MemoizedHermesRoomReadyState = memo(HermesRoomReadyState);
 
 export function HermesRoomScreen({ serverId }: { serverId: string }) {
-  const { messages, status, error, sendMessage } = useHermesRoom(serverId);
+  const { messages, status, error, gatewayStatus, sendMessage } = useHermesRoom(serverId);
 
   if (status === "loading") {
     return (
@@ -126,6 +240,7 @@ export function HermesRoomScreen({ serverId }: { serverId: string }) {
     <MemoizedHermesRoomReadyState
       serverId={serverId}
       messages={messages}
+      gatewayStatus={gatewayStatus}
       sendMessage={sendMessage}
     />
   );
@@ -151,5 +266,34 @@ const styles = StyleSheet.create((theme: Theme) => ({
     fontSize: theme.fontSize.base,
     color: theme.colors.foregroundMuted,
     textAlign: "center",
+  },
+  gatewayStatusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1.5],
+  },
+  gatewayStatusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  gatewayStatusDotConnected: {
+    backgroundColor: theme.colors.statusSuccess,
+  },
+  gatewayStatusDotDisconnected: {
+    backgroundColor: theme.colors.statusDanger,
+  },
+  gatewayStatusText: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.xs,
+  },
+  gatewayFooterRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    width: "100%",
+  },
+  gatewayStatusDotPending: {
+    backgroundColor: theme.colors.statusWarning,
   },
 }));

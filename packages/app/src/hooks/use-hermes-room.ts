@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useHostRuntimeClient } from "@/runtime/host-runtime";
+import {
+  parseHermesGatewayStatus,
+  type HermesGatewayStatus,
+} from "@/screens/hermes-event-envelope";
 
 export const HERMES_ROOM_NAME = "Hermes";
 export const MANUAL_AUTHOR_ID = "manual";
@@ -71,6 +75,16 @@ function maxSeq(messages: HermesRoomMessage[]): number {
   return max;
 }
 
+function resolveGatewayStatus(messages: HermesRoomMessage[]): HermesGatewayStatus {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const status = parseHermesGatewayStatus(messages[index]?.body ?? "");
+    if (status) {
+      return status;
+    }
+  }
+  return "disconnected";
+}
+
 export function useHermesRoom(serverId: string, clientOverride?: HermesRoomClient | null) {
   const sessionClient = useHostRuntimeClient(serverId);
   const client = (clientOverride ?? sessionClient) as HermesRoomClient | null;
@@ -78,6 +92,7 @@ export function useHermesRoom(serverId: string, clientOverride?: HermesRoomClien
   const [messages, setMessages] = useState<HermesRoomMessage[]>([]);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
+  const [gatewayStatus, setGatewayStatus] = useState<HermesGatewayStatus>("disconnected");
   const lastSeenSeqRef = useRef<number>(0);
 
   useEffect(() => {
@@ -137,6 +152,10 @@ export function useHermesRoom(serverId: string, clientOverride?: HermesRoomClien
     };
   }, [client, serverId]);
 
+  useEffect(() => {
+    setGatewayStatus(resolveGatewayStatus(messages));
+  }, [messages]);
+
   const sendMessage = useCallback(
     async (text: string) => {
       const normalized = text.trim();
@@ -158,5 +177,5 @@ export function useHermesRoom(serverId: string, clientOverride?: HermesRoomClien
     [client, roomId],
   );
 
-  return { roomId, messages, status, error, sendMessage };
+  return { roomId, messages, status, error, gatewayStatus, sendMessage };
 }

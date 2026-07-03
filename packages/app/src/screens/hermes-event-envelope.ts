@@ -28,11 +28,17 @@ export const HERMES_EVENT_ENVELOPE_PREFIX = '{"_type":';
 export type HermesToolCallStatus = "running" | "completed" | "failed";
 export type HermesActivityType = "system" | "info" | "success" | "error";
 export type HermesThoughtStatus = "loading" | "ready";
+export type HermesGatewayStatus = "connected" | "disconnected";
 
 export interface HermesThoughtEnvelope {
   _type: "thought";
   text: string;
   status?: HermesThoughtStatus;
+}
+
+export interface HermesStatusEnvelope {
+  _type: "status";
+  state: HermesGatewayStatus;
 }
 
 export interface HermesToolCallEnvelope {
@@ -54,6 +60,7 @@ export interface HermesActivityLogEnvelope {
 
 export type HermesEventEnvelope =
   | HermesThoughtEnvelope
+  | HermesStatusEnvelope
   | HermesToolCallEnvelope
   | HermesActivityLogEnvelope;
 
@@ -64,6 +71,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const TOOL_CALL_STATUSES = new Set<HermesToolCallStatus>(["running", "completed", "failed"]);
 const ACTIVITY_TYPES = new Set<HermesActivityType>(["system", "info", "success", "error"]);
 const THOUGHT_STATUSES = new Set<HermesThoughtStatus>(["loading", "ready"]);
+const GATEWAY_STATUSES = new Set<HermesGatewayStatus>(["connected", "disconnected"]);
+const LEGACY_CONNECTED_STATUS = "🟢 **Hermes Gateway** — Connected";
+const LEGACY_DISCONNECTED_STATUS = "🔴 **Hermes Gateway** — Disconnected";
 
 function parseThought(parsed: Record<string, unknown>): HermesThoughtEnvelope | null {
   if (typeof parsed.text !== "string") {
@@ -74,6 +84,16 @@ function parseThought(parsed: Record<string, unknown>): HermesThoughtEnvelope | 
       ? (parsed.status as HermesThoughtStatus)
       : undefined;
   return { _type: "thought", text: parsed.text, ...(status ? { status } : {}) };
+}
+
+function parseStatus(parsed: Record<string, unknown>): HermesStatusEnvelope | null {
+  if (
+    typeof parsed.state !== "string" ||
+    !GATEWAY_STATUSES.has(parsed.state as HermesGatewayStatus)
+  ) {
+    return null;
+  }
+  return { _type: "status", state: parsed.state as HermesGatewayStatus };
 }
 
 function parseToolCall(parsed: Record<string, unknown>): HermesToolCallEnvelope | null {
@@ -137,6 +157,8 @@ export function parseHermesEventEnvelope(body: string): HermesEventEnvelope | nu
   switch (parsed._type) {
     case "thought":
       return parseThought(parsed);
+    case "status":
+      return parseStatus(parsed);
     case "tool_call":
       return parseToolCall(parsed);
     case "activity_log":
@@ -144,4 +166,18 @@ export function parseHermesEventEnvelope(body: string): HermesEventEnvelope | nu
     default:
       return null;
   }
+}
+
+export function parseHermesGatewayStatus(body: string): HermesGatewayStatus | null {
+  const envelope = parseHermesEventEnvelope(body);
+  if (envelope?._type === "status") {
+    return envelope.state;
+  }
+  if (body === LEGACY_CONNECTED_STATUS) {
+    return "connected";
+  }
+  if (body === LEGACY_DISCONNECTED_STATUS) {
+    return "disconnected";
+  }
+  return null;
 }
