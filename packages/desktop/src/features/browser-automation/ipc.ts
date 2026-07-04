@@ -1,8 +1,20 @@
 import type { Rectangle } from "electron";
 import { ipcMain } from "electron";
 import { BrowserAutomationExecuteRequestSchema } from "@getpaseo/protocol/browser-automation/rpc-schemas";
-import type { BrowserAutomationConsoleLogEntry } from "@getpaseo/protocol/browser-automation/rpc-schemas";
+import type {
+  BrowserAutomationConsoleLogEntry,
+  BrowserAutomationDialogEvent,
+} from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import type { TabContents, BrowserRegistry, TabImage } from "./service.js";
+import { CdpSessionQueue } from "./cdp-session-queue.js";
+import {
+  dialogAcceptValue,
+  handledDialogEvent,
+  MAX_DIALOGS_PER_COMMAND,
+  promptShimDrainScript,
+  promptShimInstallScript,
+  promptShimRestoreScript,
+} from "./dialog-handling.js";
 import { executeAutomationCommand } from "./service.js";
 import {
   listRegisteredPaseoBrowserIds,
@@ -13,38 +25,23 @@ import {
 } from "../browser-webviews/index.js";
 
 const MAX_CONSOLE_MESSAGES_PER_TAB = 200;
-const PIXEL_CAPTURE_BRIDGE_TIMEOUT_MS = 5_000;
 const consoleMessagesByContentsId = new Map<number, BrowserAutomationConsoleLogEntry[]>();
+const cdpQueuesByContentsId = new Map<number, CdpSessionQueue>();
+const dialogMonitorsByContentsId = new Map<number, DialogMonitor>();
 const observedContentsIds = new Set<number>();
-let nextPixelCaptureBridgeRequest = 0;
 
 interface IpcHandlerRegistry {
   handle(channel: string, listener: (event: unknown, ...args: unknown[]) => unknown): void;
-}
-
-interface IpcBridgeEvent {
-  sender?: {
-    id?: number;
-  };
-}
-
-type IpcListener = (event: IpcBridgeEvent, payload: unknown) => void;
-
-interface IpcCaptureBridge {
-  on(channel: string, listener: IpcListener): void;
-  removeListener(channel: string, listener: IpcListener): void;
-}
-
-interface HostWebContents {
-  readonly id: number;
-  isDestroyed(): boolean;
-  send(channel: string, payload: unknown): void;
 }
 
 interface WebContentsDebugger {
   isAttached(): boolean;
   attach(protocolVersion?: string): void;
   sendCommand(command: string, params?: Record<string, unknown>): Promise<unknown>;
+  on?(
+    event: "message",
+    listener: (event: unknown, method: string, params?: Record<string, unknown>) => void,
+  ): void;
 }
 
 interface ConsoleMessageEmitter {
@@ -63,7 +60,6 @@ interface ConsoleMessageEmitter {
 
 interface BrowserAutomationWebContents extends ConsoleMessageEmitter {
   readonly id: number;
-  readonly hostWebContents: HostWebContents | null;
   readonly debugger: WebContentsDebugger;
   getURL(): string;
   getTitle(): string;
@@ -78,34 +74,12 @@ interface BrowserAutomationWebContents extends ConsoleMessageEmitter {
   reload(): void;
   capturePage(rect?: Rectangle, options?: { stayHidden?: boolean }): Promise<TabImage>;
   invalidate(): void;
-  getBackgroundThrottling(): boolean;
-  setBackgroundThrottling(allowed: boolean): void;
 }
 
-type PixelCaptureBridgeKind = "prepare" | "restore";
-
-interface PixelCaptureBridgeSuccess {
-  token?: string;
-}
-
-interface PixelCaptureBridgeOptions {
-  ipc?: IpcCaptureBridge;
-  createRequestId?: () => string;
-  timeoutMs?: number;
-}
-
-interface PreparedPixelCapture {
-  browserId: string;
-  host: HostWebContents;
-}
-
-export function adaptWebContents(
-  contents: BrowserAutomationWebContents,
-  browserId: string,
-  options?: PixelCaptureBridgeOptions,
-): TabContents {
+export function adaptWebContents(contents: BrowserAutomationWebContents): TabContents {
   observeConsoleMessages(contents);
-  const preparedPixelCapturesByToken = new Map<string, PreparedPixelCapture>();
+  const cdpQueue = getCdpQueue(contents.id);
+  const dialogMonitor = getDialogMonitor(contents, cdpQueue);
   return {
     id: contents.id,
     getURL: () => contents.getURL(),
@@ -120,172 +94,27 @@ export function adaptWebContents(
     goForward: () => contents.goForward(),
     reload: () => contents.reload(),
     capturePage: (captureOptions) => contents.capturePage(undefined, captureOptions),
-    prepareForPixelCapture: async () => {
-      const host = getPixelCaptureHost(contents);
-      const result = await requestPixelCaptureBridge({ host, browserId, kind: "prepare", options });
-      if (!result.token) {
-        throw new Error("Browser pixel capture preparation did not return a token.");
-      }
-      preparedPixelCapturesByToken.set(result.token, { browserId, host });
-      return { token: result.token };
-    },
-    restorePixelCapture: async (preparation) => {
-      const prepared = preparedPixelCapturesByToken.get(preparation.token);
-      if (!prepared) {
-        throw new Error("Browser pixel capture preparation is no longer active.");
-      }
-      try {
-        await requestPixelCaptureBridge({
-          host: prepared.host,
-          browserId: prepared.browserId,
-          kind: "restore",
-          options,
-          extraPayload: { token: preparation.token },
-        });
-      } finally {
-        preparedPixelCapturesByToken.delete(preparation.token);
-      }
-    },
     invalidate: () => contents.invalidate(),
-    isBackgroundThrottlingAllowed: () => contents.getBackgroundThrottling(),
-    setBackgroundThrottling: (allowed) => contents.setBackgroundThrottling(allowed),
     getConsoleMessages: () => consoleMessagesByContentsId.get(contents.id) ?? [],
-    sendDebugCommand: async (command: string, params?: Record<string, unknown>) => {
-      if (!contents.debugger.isAttached()) {
-        contents.debugger.attach("1.3");
-      }
-      return contents.debugger.sendCommand(command, params ?? {});
-    },
+    captureDialogs: (task) => dialogMonitor.capture(task),
+    sendDebugCommand: (command: string, params?: Record<string, unknown>) =>
+      cdpQueue.run(async () => {
+        if (!contents.debugger.isAttached()) {
+          contents.debugger.attach("1.3");
+        }
+        return contents.debugger.sendCommand(command, params ?? {});
+      }),
   };
 }
 
-function getPixelCaptureHost(contents: BrowserAutomationWebContents): HostWebContents {
-  const host = contents.hostWebContents;
-  if (!host || host.isDestroyed()) {
-    throw new Error("Browser host renderer is not available.");
+function getCdpQueue(contentsId: number): CdpSessionQueue {
+  const existing = cdpQueuesByContentsId.get(contentsId);
+  if (existing) {
+    return existing;
   }
-  return host;
-}
-
-function requestPixelCaptureBridge(input: {
-  host: HostWebContents;
-  browserId: string;
-  kind: PixelCaptureBridgeKind;
-  options: PixelCaptureBridgeOptions | undefined;
-  extraPayload?: { token: string };
-}): Promise<PixelCaptureBridgeSuccess> {
-  const { host, browserId, kind, options, extraPayload } = input;
-  if (host.isDestroyed()) {
-    return Promise.reject(new Error("Browser host renderer is not available."));
-  }
-
-  const ipc = options?.ipc ?? ipcMain;
-  const requestId =
-    options?.createRequestId?.() ?? `browser-pixel-capture-${++nextPixelCaptureBridgeRequest}`;
-  const timeoutMs = options?.timeoutMs ?? PIXEL_CAPTURE_BRIDGE_TIMEOUT_MS;
-  const requestChannel =
-    kind === "prepare" ? "paseo:browser:capture-prepare" : "paseo:browser:capture-restore";
-  const responseChannel =
-    kind === "prepare" ? "paseo:browser:capture-prepared" : "paseo:browser:capture-restored";
-
-  return new Promise((resolve, reject) => {
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    const cleanup = () => {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-      }
-      ipc.removeListener(responseChannel, listener);
-    };
-    const listener: IpcListener = (event, payload) => {
-      if (readSenderId(event) !== host.id) {
-        return;
-      }
-      const response = readPixelCaptureBridgeResponse(payload, requestId);
-      if (!response) {
-        return;
-      }
-      cleanup();
-      if (response.ok) {
-        resolve(response);
-      } else {
-        reject(new Error(response.message));
-      }
-    };
-
-    ipc.on(responseChannel, listener);
-    timeoutId = setTimeout(() => {
-      cleanup();
-      sendPixelCaptureCancel(host, {
-        requestId,
-        browserId,
-        ...(extraPayload ? { token: extraPayload.token } : {}),
-      });
-      reject(new Error(`Browser pixel capture ${kind} timed out.`));
-    }, timeoutMs);
-
-    try {
-      host.send(requestChannel, {
-        requestId,
-        browserId,
-        ...(extraPayload ? { token: extraPayload.token } : {}),
-      });
-    } catch (error) {
-      cleanup();
-      reject(error);
-    }
-  });
-}
-
-function sendPixelCaptureCancel(
-  host: HostWebContents,
-  payload: { browserId: string; requestId?: string; token?: string },
-): void {
-  if (host.isDestroyed()) {
-    return;
-  }
-  try {
-    host.send("paseo:browser:capture-cancel", payload);
-  } catch {
-    // The original prepare/restore request owns the user-visible error.
-  }
-}
-
-function readSenderId(event: IpcBridgeEvent): number | null {
-  const senderId = event.sender?.id;
-  return typeof senderId === "number" ? senderId : null;
-}
-
-function readPixelCaptureBridgeResponse(
-  payload: unknown,
-  requestId: string,
-): ({ ok: true } & PixelCaptureBridgeSuccess) | { ok: false; message: string } | null {
-  if (!isRecord(payload)) {
-    return null;
-  }
-  const record = payload;
-  if (record.requestId !== requestId) {
-    return null;
-  }
-  if (record.ok === true) {
-    return {
-      ok: true,
-      ...(typeof record.token === "string" && record.token.length > 0
-        ? { token: record.token }
-        : {}),
-    };
-  }
-  if (record.ok === false) {
-    const message =
-      typeof record.message === "string" && record.message.length > 0
-        ? record.message
-        : "Browser pixel capture bridge failed.";
-    return { ok: false, message };
-  }
-  return null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  const queue = new CdpSessionQueue();
+  cdpQueuesByContentsId.set(contentsId, queue);
+  return queue;
 }
 
 function observeConsoleMessages(contents: BrowserAutomationWebContents): void {
@@ -302,6 +131,192 @@ function observeConsoleMessages(contents: BrowserAutomationWebContents): void {
   contents.once("destroyed", () => {
     observedContentsIds.delete(contents.id);
     consoleMessagesByContentsId.delete(contents.id);
+    cdpQueuesByContentsId.delete(contents.id);
+    dialogMonitorsByContentsId.delete(contents.id);
+  });
+}
+
+function getDialogMonitor(
+  contents: BrowserAutomationWebContents,
+  cdpQueue: CdpSessionQueue,
+): DialogMonitor {
+  const existing = dialogMonitorsByContentsId.get(contents.id);
+  if (existing) {
+    return existing;
+  }
+  const monitor = new DialogMonitor(contents, cdpQueue);
+  dialogMonitorsByContentsId.set(contents.id, monitor);
+  return monitor;
+}
+
+class DialogMonitor {
+  private enabled = false;
+  private listenerRegistered = false;
+  private readonly activeCollectors: DialogCollector[] = [];
+
+  public constructor(
+    private readonly contents: BrowserAutomationWebContents,
+    private readonly cdpQueue: CdpSessionQueue,
+  ) {}
+
+  public async capture<T>(
+    task: () => Promise<T>,
+  ): Promise<{ result: T; dialogs: BrowserAutomationDialogEvent[] }> {
+    const collector: DialogCollector = { dialogs: [] };
+    try {
+      await this.enable();
+      await this.installPromptShim();
+    } catch (error) {
+      console.warn("[browser-automation] Dialog capture unavailable; running command without it", {
+        contentsId: this.contents.id,
+        error,
+      });
+      return { result: await task(), dialogs: [] };
+    }
+    this.activeCollectors.push(collector);
+    try {
+      const result = await task();
+      this.recordPromptShimDialogs(await this.drainPromptShim());
+      return { result, dialogs: collector.dialogs };
+    } finally {
+      const index = this.activeCollectors.indexOf(collector);
+      if (index >= 0) {
+        this.activeCollectors.splice(index, 1);
+      }
+      if (this.activeCollectors.length === 0) {
+        await this.restorePromptShim();
+      }
+    }
+  }
+
+  private async enable(): Promise<void> {
+    if (this.enabled) {
+      return;
+    }
+    if (!this.contents.debugger.on) {
+      return;
+    }
+    if (!this.listenerRegistered) {
+      this.listenerRegistered = true;
+      this.contents.debugger.on("message", (_event, method, params) => {
+        if (method !== "Page.javascriptDialogOpening") {
+          return;
+        }
+        if (this.activeCollectors.length === 0) {
+          return;
+        }
+        void this.handleOpening(params ?? {});
+      });
+    }
+    await this.sendDebugCommand("Page.enable");
+    this.enabled = true;
+  }
+
+  private async handleOpening(params: Record<string, unknown>): Promise<void> {
+    const event = handledDialogEvent(params);
+    for (const collector of this.activeCollectors) {
+      this.recordDialogs(collector, [event]);
+    }
+    await this.sendDialogResponseCommand("Page.handleJavaScriptDialog", {
+      accept: dialogAcceptValue(event.type),
+    });
+  }
+
+  private async installPromptShim(): Promise<void> {
+    await this.sendDebugCommand("Runtime.evaluate", {
+      expression: promptShimInstallScript(),
+      returnByValue: true,
+    });
+  }
+
+  private async drainPromptShim(): Promise<BrowserAutomationDialogEvent[]> {
+    try {
+      const result = (await this.sendDebugCommand("Runtime.evaluate", {
+        expression: promptShimDrainScript(),
+        returnByValue: true,
+      })) as { result?: { value?: unknown } };
+      return parsePromptShimDialogs(result.result?.value);
+    } catch {
+      return [];
+    }
+  }
+
+  private async restorePromptShim(): Promise<void> {
+    try {
+      await this.sendDebugCommand("Runtime.evaluate", {
+        expression: promptShimRestoreScript(),
+        returnByValue: true,
+      });
+    } catch {
+      // Navigation can destroy the execution context before cleanup runs; the next page has no shim.
+    }
+  }
+
+  private recordDialogs(collector: DialogCollector, dialogs: BrowserAutomationDialogEvent[]): void {
+    for (const dialog of dialogs) {
+      if (collector.dialogs.length >= MAX_DIALOGS_PER_COMMAND) {
+        return;
+      }
+      collector.dialogs.push(dialog);
+    }
+  }
+
+  private recordPromptShimDialogs(dialogs: BrowserAutomationDialogEvent[]): void {
+    for (const collector of this.activeCollectors) {
+      this.recordDialogs(collector, dialogs);
+    }
+  }
+
+  private async sendDebugCommand(
+    command: string,
+    params?: Record<string, unknown>,
+  ): Promise<unknown> {
+    return this.cdpQueue.run(async () => {
+      if (!this.contents.debugger.isAttached()) {
+        this.contents.debugger.attach("1.3");
+      }
+      return this.contents.debugger.sendCommand(command, params ?? {});
+    });
+  }
+
+  private async sendDialogResponseCommand(
+    command: string,
+    params?: Record<string, unknown>,
+  ): Promise<unknown> {
+    // Dialogs can block the CDP command that opened them, so the unblocker must not wait behind
+    // the per-tab command queue.
+    if (!this.contents.debugger.isAttached()) {
+      this.contents.debugger.attach("1.3");
+    }
+    return this.contents.debugger.sendCommand(command, params ?? {});
+  }
+}
+
+interface DialogCollector {
+  dialogs: BrowserAutomationDialogEvent[];
+}
+
+function parsePromptShimDialogs(value: unknown): BrowserAutomationDialogEvent[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((entry): BrowserAutomationDialogEvent[] => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+    const record = entry as Record<string, unknown>;
+    if (record.type !== "prompt" || record.action !== "dismissed") {
+      return [];
+    }
+    return [
+      {
+        type: "prompt",
+        message: typeof record.message === "string" ? record.message : "",
+        ...(typeof record.defaultValue === "string" ? { defaultValue: record.defaultValue } : {}),
+        action: "dismissed",
+        timestamp: typeof record.timestamp === "number" ? record.timestamp : Date.now(),
+      },
+    ];
   });
 }
 
@@ -328,7 +343,7 @@ function createRegistry(): BrowserRegistry {
     listRegisteredBrowserIdsForWorkspace: listRegisteredPaseoBrowserIdsForWorkspace,
     getTabContents(browserId: string): TabContents | null {
       const contents = getPaseoBrowserWebContents(browserId);
-      return contents ? adaptWebContents(contents, browserId) : null;
+      return contents ? adaptWebContents(contents) : null;
     },
     getBrowserWorkspaceId: getPaseoBrowserWorkspaceId,
     getWorkspaceActiveBrowserId: getWorkspaceActivePaseoBrowserId,
