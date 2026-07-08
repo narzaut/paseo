@@ -410,6 +410,7 @@ function SidebarHostPicker({
       showActiveConnection
       onOpenHostSettings={onOpenHostSettings}
       searchable
+      desktopPlacement="top-start"
       desktopMinWidth={240}
       addHostTestID="sidebar-host-add"
       hostOptionTestID={sidebarHostOptionTestID}
