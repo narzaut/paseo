@@ -411,12 +411,12 @@ export function buildHostSessionsRoute(serverId: string) {
   return `${base}/sessions` as const;
 }
 
-export function buildHermesRoute(serverId?: string | null): string {
+export function buildHermesRoute(serverId?: string | null) {
   const normalized = trimNonEmpty(serverId);
   if (!normalized) {
-    return "/";
+    return "/" as const;
   }
-  return `/h/${encodeSegment(normalized)}/hermes`;
+  return `/h/${encodeSegment(normalized)}/hermes` as const;
 }
 
 export function buildSessionsRoute() {
