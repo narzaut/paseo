@@ -781,6 +781,9 @@ export const en = {
     },
   },
   sidebar: {
+    pinned: {
+      title: "Pinned",
+    },
     host: {
       noHost: "No host",
       switchTitle: "Switch host",
@@ -793,6 +796,20 @@ export const en = {
       home: "Home",
       settings: "Settings",
       closeSidebar: "Close sidebar",
+    },
+    help: {
+      trigger: "Help and support",
+      troubleshoot: "Troubleshoot",
+      diagnostics: "Run diagnostics",
+      diagnosticsDescription: "Collect app and connected host details",
+      shortcuts: "Keyboard shortcuts",
+      shortcutsDescription: "View available keyboard shortcuts",
+      reportIssue: "Report an issue",
+      discord: "Discord",
+      discordDescription: "Best for quick help and discussion",
+      github: "Create GitHub issue",
+      githubDescription: "Report a reproducible bug",
+      version: "Paseo {{version}}",
     },
     sections: {
       sessions: "History",
@@ -842,6 +859,8 @@ export const en = {
         copyPath: "Copy path",
         copyBranchName: "Copy branch name",
         rename: "Rename workspace",
+        pin: "Pin to top",
+        unpin: "Unpin",
         archive: "Archive",
         archiveWorkspace: "Archive workspace",
         hideFromSidebar: "Hide from sidebar",

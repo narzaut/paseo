@@ -793,6 +793,9 @@ export const ru: TranslationResources = {
     },
   },
   sidebar: {
+    pinned: {
+      title: "Закреплённые",
+    },
     host: {
       noHost: "Нет хоста",
       switchTitle: "Сменить хост",
@@ -805,6 +808,20 @@ export const ru: TranslationResources = {
       home: "Дом",
       settings: "Настройки",
       closeSidebar: "Закрыть боковую панель",
+    },
+    help: {
+      trigger: "Помощь и поддержка",
+      troubleshoot: "Устранение неполадок",
+      diagnostics: "Запустить диагностику",
+      diagnosticsDescription: "Собрать данные приложения и подключённых хостов",
+      shortcuts: "Сочетания клавиш",
+      shortcutsDescription: "Показать доступные сочетания клавиш",
+      reportIssue: "Сообщить о проблеме",
+      discord: "Discord",
+      discordDescription: "Для быстрой помощи и обсуждения",
+      github: "Создать issue в GitHub",
+      githubDescription: "Сообщить о воспроизводимой ошибке",
+      version: "Paseo {{version}}",
     },
     sections: {
       sessions: "История",
@@ -854,6 +871,8 @@ export const ru: TranslationResources = {
         copyPath: "Копировать путь",
         copyBranchName: "Скопировать название ветки",
         rename: "Переименовать рабочую область",
+        pin: "Закрепить вверху",
+        unpin: "Открепить",
         archive: "Архив",
         archiveWorkspace: "Архивировать рабочее пространство",
         hideFromSidebar: "Скрыть с боковой панели",

@@ -774,6 +774,9 @@ export const ar: TranslationResources = {
     },
   },
   sidebar: {
+    pinned: {
+      title: "المثبتة",
+    },
     host: {
       noHost: "لا مضيف",
       switchTitle: "تبديل المضيف",
@@ -786,6 +789,20 @@ export const ar: TranslationResources = {
       home: "بيت",
       settings: "إعدادات",
       closeSidebar: "إغلاق الشريط الجانبي",
+    },
+    help: {
+      trigger: "المساعدة والدعم",
+      troubleshoot: "استكشاف الأخطاء وإصلاحها",
+      diagnostics: "تشغيل التشخيص",
+      diagnosticsDescription: "جمع تفاصيل التطبيق والمضيفين المتصلين",
+      shortcuts: "اختصارات لوحة المفاتيح",
+      shortcutsDescription: "عرض اختصارات لوحة المفاتيح المتاحة",
+      reportIssue: "الإبلاغ عن مشكلة",
+      discord: "Discord",
+      discordDescription: "الأفضل للمساعدة السريعة والنقاش",
+      github: "إنشاء مشكلة على GitHub",
+      githubDescription: "الإبلاغ عن خطأ يمكن إعادة إنتاجه",
+      version: "Paseo {{version}}",
     },
     sections: {
       sessions: "السجل",
@@ -835,6 +852,8 @@ export const ar: TranslationResources = {
         copyPath: "نسخ المسار",
         copyBranchName: "انسخ اسم الفرع",
         rename: "إعادة تسمية مساحة العمل",
+        pin: "تثبيت في الأعلى",
+        unpin: "إلغاء التثبيت",
         archive: "أرشيف",
         archiveWorkspace: "أرشفة مساحة العمل",
         hideFromSidebar: "إخفاء من الشريط الجانبي",
