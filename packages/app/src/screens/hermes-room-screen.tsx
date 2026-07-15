@@ -188,7 +188,7 @@ function HermesRoomReadyState({
         <AgentStreamView
           agentId={HERMES_ROOM_AGENT_ID}
           serverId={serverId}
-          agent={agent}
+          context={agent}
           streamItems={streamItems}
           pendingPermissions={EMPTY_PENDING_PERMISSIONS}
           isAuthoritativeHistoryReady
