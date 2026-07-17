@@ -23,7 +23,7 @@ import {
   session,
   webContents,
 } from "electron";
-import { createDaemonCommandHandlers, registerDaemonManager } from "./daemon/daemon-manager.js";
+import { registerDaemonManager } from "./daemon/daemon-manager.js";
 import { parsePassthroughCliArgsFromArgv, runPassthroughCli } from "./daemon/cli/passthrough.js";
 import { closeAllTransportSessions } from "./daemon/local-transport.js";
 import {
@@ -45,13 +45,13 @@ import {
   ensureNotificationCenterRegistration,
 } from "./features/notifications.js";
 import { registerOpenerHandlers } from "./features/opener.js";
-import { registerEditorTargetHandlers } from "./features/editor-targets.js";
+import { registerEditorTargetHandlers } from "./features/editor-targets/ipc.js";
 import { setupApplicationMenu } from "./features/menu.js";
 import {
   BROWSER_NEW_TAB_REQUEST_EVENT,
+  decideBrowserWindowOpenRequest,
   getPaseoBrowserIdForWebContents,
   getPaseoBrowserWebContents,
-  handleBrowserWindowOpenRequest,
   listRegisteredPaseoBrowserIds,
   isPaseoBrowserWebviewAttach,
   preparePaseoBrowserWebContents,
@@ -64,6 +64,7 @@ import {
 import {
   clearPaseoBrowserProfile,
   getLegacyPaseoBrowserProfileSession,
+  PASEO_BROWSER_PROFILE_PARTITION,
   getPaseoBrowserProfileSession,
   getPaseoBrowserProfileSessions,
   listPaseoBrowserProfileGuests,
@@ -121,8 +122,6 @@ const FORWARDED_PASEO_SHORTCUT_KEYS = new Set([
   "arrowup",
   "arrowdown",
 ]);
-const DESKTOP_SMOKE_ENV = "PASEO_DESKTOP_SMOKE";
-const DESKTOP_SMOKE_STOP_REQUEST = "paseo-smoke-stop";
 app.setName(APP_NAME);
 
 interface AttachedBrowserInput {
@@ -226,6 +225,79 @@ function showBrowserWebviewContextMenu(
         ]),
   ]);
   menu.popup({ window: win });
+}
+
+function getBrowserPopupWindowOptions(
+  mainWindow: BrowserWindow,
+): Electron.BrowserWindowConstructorOptions {
+  return {
+    parent: mainWindow,
+    show: true,
+    autoHideMenuBar: true,
+    webPreferences: {
+      partition: PASEO_BROWSER_PROFILE_PARTITION,
+      nodeIntegration: false,
+      nodeIntegrationInSubFrames: false,
+      nodeIntegrationInWorker: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+      webviewTag: false,
+      allowRunningInsecureContent: false,
+    },
+  };
+}
+
+function installBrowserWindowOpenHandler(input: {
+  contents: Electron.WebContents;
+  sourceContents: Electron.WebContents;
+  mainWindow: BrowserWindow;
+}): void {
+  const { contents, sourceContents, mainWindow } = input;
+
+  contents.setWindowOpenHandler(({ url, disposition, frameName, features, postBody }) => {
+    const decision = decideBrowserWindowOpenRequest({
+      url,
+      disposition,
+      frameName,
+      features,
+      hasPostBody: postBody !== undefined && postBody !== null,
+    });
+
+    if (decision.kind === "deny") {
+      return { action: "deny" };
+    }
+    if (decision.kind === "popup") {
+      return {
+        action: "allow",
+        overrideBrowserWindowOptions: getBrowserPopupWindowOptions(mainWindow),
+      };
+    }
+
+    const sourceBrowserId = getPaseoBrowserIdForWebContents(sourceContents);
+    if (sourceBrowserId) {
+      mainWindow.webContents.send(BROWSER_NEW_TAB_REQUEST_EVENT, {
+        sourceBrowserId,
+        url: decision.url,
+      });
+    } else {
+      pendingBrowserWindowOpenRequests.add(sourceContents.id, decision.url);
+    }
+    return { action: "deny" };
+  });
+
+  contents.on("did-create-window", (popupWindow) => {
+    const popupContents = popupWindow.webContents;
+    registerBrowserWebviewNavigationGuards(popupContents);
+    popupContents.on("context-menu", (_event, params) => {
+      showBrowserWebviewContextMenu(popupWindow, popupContents, params);
+    });
+    installBrowserWindowOpenHandler({
+      contents: popupContents,
+      sourceContents,
+      mainWindow,
+    });
+  });
 }
 
 // In dev mode, detect git worktrees and isolate each instance so multiple
@@ -724,18 +796,10 @@ async function createWindow(
         });
       }
     });
-    contents.setWindowOpenHandler(({ url }) => {
-      const sourceBrowserId = getPaseoBrowserIdForWebContents(contents);
-      if (!sourceBrowserId) {
-        pendingBrowserWindowOpenRequests.add(contents.id, url);
-      }
-      return handleBrowserWindowOpenRequest({
-        url,
-        sourceBrowserId,
-        requestNewTab: (payload) => {
-          mainWindow.webContents.send(BROWSER_NEW_TAB_REQUEST_EVENT, payload);
-        },
-      });
+    installBrowserWindowOpenHandler({
+      contents,
+      sourceContents: contents,
+      mainWindow,
     });
     contents.on("context-menu", (_contextMenuEvent, params) => {
       showBrowserWebviewContextMenu(mainWindow, contents, params);
@@ -822,53 +886,6 @@ async function runCliPassthroughIfRequested(): Promise<boolean> {
   return true;
 }
 
-async function runDesktopSmokeIfRequested(): Promise<boolean> {
-  if (process.env[DESKTOP_SMOKE_ENV] !== "1") {
-    return false;
-  }
-
-  const handlers = createDaemonCommandHandlers();
-  const startStatus = await handlers.start_desktop_daemon();
-  process.stdout.write(
-    `[paseo-smoke] ${JSON.stringify({
-      type: "desktop-daemon-smoke-started",
-      status: startStatus,
-    })}\n`,
-  );
-
-  await waitForDesktopSmokeStopRequest();
-
-  const stopStatus = await handlers.stop_desktop_daemon();
-  process.stdout.write(
-    `[paseo-smoke] ${JSON.stringify({
-      type: "desktop-daemon-smoke-stopped",
-      stopStatus,
-    })}\n`,
-  );
-
-  app.exit(0);
-  return true;
-}
-
-function waitForDesktopSmokeStopRequest(): Promise<void> {
-  return new Promise((resolve) => {
-    let buffer = "";
-    const stop = () => {
-      process.stdin.off("data", onData);
-      resolve();
-    };
-    const onData = (chunk: Buffer | string) => {
-      buffer += chunk.toString();
-      if (buffer.includes(DESKTOP_SMOKE_STOP_REQUEST)) {
-        stop();
-      }
-    };
-
-    process.stdin.on("data", onData);
-    process.stdin.resume();
-  });
-}
-
 async function bootstrap(): Promise<void> {
   if (!setupSingleInstanceLock()) {
     return;
@@ -912,9 +929,6 @@ async function bootstrap(): Promise<void> {
     },
   });
   ensureNotificationCenterRegistration();
-  if (await runDesktopSmokeIfRequested()) {
-    return;
-  }
   registerDaemonManager();
   registerWindowManager();
   registerDialogHandlers();
