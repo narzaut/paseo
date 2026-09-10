@@ -5,6 +5,18 @@ import {
   workspaceTabTargetsEqual,
 } from "./identity";
 
+describe("New tab identity", () => {
+  it("stays outside deterministic target identity", () => {
+    const target = { kind: "new_tab" } as const;
+
+    expect(normalizeWorkspaceTabTarget(target)).toEqual(target);
+    expect(workspaceTabTargetsEqual(target, target)).toBe(false);
+    expect(() => buildDeterministicWorkspaceTabId(target)).toThrow(
+      "New tabs do not have deterministic target identities",
+    );
+  });
+});
+
 describe("provider subagent tab identity", () => {
   test("normalizes and compares the parent and provider child as one tab identity", () => {
     const target = normalizeWorkspaceTabTarget({
@@ -42,6 +54,55 @@ describe("provider subagent tab identity", () => {
 
     expect(first).not.toBe(second);
   });
+});
+
+describe("working diff tab identity", () => {
+  const target = {
+    kind: "working_diff" as const,
+    focusPath: "src/example.ts",
+    focusRequestId: 1,
+  };
+
+  it("normalizes file focus navigation", () => {
+    expect(
+      normalizeWorkspaceTabTarget({
+        ...target,
+        focusPath: " src\\example.ts ",
+      }),
+    ).toEqual(target);
+  });
+
+  it("treats focus as navigation state rather than tab identity", () => {
+    expect(workspaceTabTargetsEqual(target, target)).toBe(true);
+    expect(workspaceTabTargetsEqual(target, { ...target, focusPath: "src/other.ts" })).toBe(false);
+    expect(workspaceTabTargetsEqual(target, { ...target, focusRequestId: 2 })).toBe(false);
+    const workingDiffId = buildDeterministicWorkspaceTabId(target);
+    const otherFocusId = buildDeterministicWorkspaceTabId({
+      ...target,
+      focusPath: "src/other.ts",
+    });
+    const fileId = buildDeterministicWorkspaceTabId({
+      kind: "file",
+      path: target.focusPath,
+    });
+
+    expect(workingDiffId).toBe("working_diff");
+    expect(workingDiffId).toBe(otherFocusId);
+    expect(workingDiffId).not.toBe(fileId);
+  });
+});
+
+describe("workspace utility panel identity", () => {
+  it.each(["files", "pull_request"] as const)(
+    "normalizes and deterministically keys %s",
+    (kind) => {
+      const target = { kind };
+
+      expect(normalizeWorkspaceTabTarget(target)).toEqual(target);
+      expect(buildDeterministicWorkspaceTabId(target)).toBe(kind);
+      expect(workspaceTabTargetsEqual(target, target)).toBe(true);
+    },
+  );
 });
 
 describe("commit diff tab identity", () => {
@@ -94,5 +155,44 @@ describe("commit diff tab identity", () => {
         sha: "   ",
       }),
     ).toBeNull();
+  });
+});
+
+describe("plugin panel tab identity", () => {
+  it("normalizes exact workspace and agent context", () => {
+    expect(
+      normalizeWorkspaceTabTarget({
+        kind: "plugin",
+        pluginId: " review ",
+        panelId: " details ",
+        context: "agent",
+        agentId: " agent-1 ",
+      }),
+    ).toEqual({
+      kind: "plugin",
+      pluginId: "review",
+      panelId: "details",
+      context: "agent",
+      agentId: "agent-1",
+    });
+  });
+
+  it("gives workspace and agent instances distinct stable ids", () => {
+    const workspace = buildDeterministicWorkspaceTabId({
+      kind: "plugin",
+      pluginId: "review",
+      panelId: "details",
+      context: "workspace",
+    });
+    const agent = buildDeterministicWorkspaceTabId({
+      kind: "plugin",
+      pluginId: "review",
+      panelId: "details",
+      context: "agent",
+      agentId: "agent-1",
+    });
+
+    expect(workspace).toBe("plugin_workspace_6_review_7_details");
+    expect(agent).toBe("plugin_agent_6_review_7_details_7_agent-1");
   });
 });

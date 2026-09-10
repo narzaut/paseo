@@ -284,7 +284,7 @@ describe("hermes-room-screen-model", () => {
     });
   });
 
-  it("maps an activity_log error envelope to an error activity item", () => {
+  it("maps an activity_log error envelope to an error notification item", () => {
     const [item] = buildHermesRoomStreamItems([
       hermesMessage(
         "a1",
@@ -292,10 +292,11 @@ describe("hermes-room-screen-model", () => {
       ),
     ]);
     expect(item).toEqual({
-      kind: "activity_log",
+      kind: "notification",
+      sourceType: "notification",
       id: "a1",
       timestamp,
-      activityType: "error",
+      level: "error",
       message: "nope",
     });
   });

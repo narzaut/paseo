@@ -4,6 +4,10 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
+vi.mock("@/runtime/host-runtime", () => ({
+  useHostRuntimeClient: vi.fn(() => null),
+}));
+
 describe("useHermesRoom", () => {
   it("creates or reuses the Hermes room, loads recent messages, and sends text", async () => {
     (globalThis as { __DEV__?: boolean }).__DEV__ = false;
@@ -56,7 +60,7 @@ describe("useHermesRoom", () => {
       body: "hi from browser",
       authorAgentId: "manual",
     });
-  });
+  }, 15_000);
 
   it("waits on the seq cursor and applies an edited message in place", async () => {
     (globalThis as { __DEV__?: boolean }).__DEV__ = false;

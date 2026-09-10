@@ -1,6 +1,7 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setImmediate as waitForImmediate } from "node:timers/promises";
 import pino from "pino";
 
 import type {
@@ -11,8 +12,14 @@ import type {
   AgentTimelineItem,
 } from "../../../agent-sdk-types.js";
 import type { PaseoToolCatalog } from "../../../tools/types.js";
-import { OmpAgentClient, OmpAgentSession, type OmpProviderIdleScheduler } from "../agent.js";
-import type { OmpRpcSlashCommand } from "../rpc-types.js";
+import {
+  OmpAgentClient,
+  OmpAgentSession,
+  type OmpNoTurnScheduler,
+  type OmpProviderIdleScheduler,
+} from "../agent.js";
+import type { OmpUsagePollScheduler } from "../usage-poller.js";
+import type { OmpAgentMessage, OmpRpcSlashCommand } from "../rpc-types.js";
 import { FakeOmp } from "./fake-omp.js";
 
 const CWD = "/tmp/paseo-omp-agent-test";
@@ -59,11 +66,19 @@ export class OmpHarness {
   private readonly events: AgentStreamEvent[] = [];
   private session: OmpAgentSession | null = null;
 
-  constructor(options: { providerIdleScheduler?: OmpProviderIdleScheduler } = {}) {
+  constructor(
+    options: {
+      providerIdleScheduler?: OmpProviderIdleScheduler;
+      noTurnScheduler?: OmpNoTurnScheduler;
+      usagePollScheduler?: OmpUsagePollScheduler;
+    } = {},
+  ) {
     this.client = new OmpAgentClient({
       logger: pino({ level: "silent" }),
       runtime: this.omp,
       providerIdleScheduler: options.providerIdleScheduler,
+      noTurnScheduler: options.noTurnScheduler,
+      usagePollScheduler: options.usagePollScheduler,
     });
   }
 
@@ -155,7 +170,11 @@ export class OmpHarness {
     return await run;
   }
 
-  async runPromptAfterExtensionNotice(input: string, output: string): Promise<unknown> {
+  async runPromptWithCustomMessage(
+    input: string,
+    customMessage: Extract<OmpAgentMessage, { role: "custom" }>,
+    output: string,
+  ): Promise<unknown> {
     const session = this.requireSession();
     const promptStarted = this.omp.latestSession().nextPrompt();
     const run = session.run(input);
@@ -163,8 +182,47 @@ export class OmpHarness {
     const runtime = this.omp.latestSession();
     runtime.beginTurn();
     runtime.acceptPrompt(input, "user-1");
-    runtime.acceptCustomMessage("extension inventory changed");
-    runtime.finishTurn({ role: "custom", content: "extension inventory changed" });
+    runtime.emit({ type: "message_end", message: customMessage });
+    runtime.streamAssistantText(output);
+    runtime.finishTurn();
+    return await run;
+  }
+
+  async startPromptWithEmptyAgentEnd(
+    input: string,
+    output: string,
+  ): Promise<{ completion: Promise<unknown> }> {
+    const session = this.requireSession();
+    const promptStarted = this.omp.latestSession().nextPrompt();
+    const completion = session.run(input);
+    await promptStarted;
+    const runtime = this.omp.latestSession();
+    runtime.beginTurn();
+    runtime.acceptPrompt(input, "user-1");
+    runtime.streamAssistantText(output);
+    runtime.finishTurnWithEmptyAgentEnd();
+    return { completion };
+  }
+
+  async runPromptAfterExtensionNotice(
+    input: string,
+    output: string,
+    display?: boolean,
+  ): Promise<unknown> {
+    const session = this.requireSession();
+    const promptStarted = this.omp.latestSession().nextPrompt();
+    const run = session.run(input);
+    await promptStarted;
+    const runtime = this.omp.latestSession();
+    const message = {
+      role: "custom" as const,
+      content: "extension inventory changed",
+      ...(display === undefined ? {} : { display }),
+    };
+    runtime.beginTurn();
+    runtime.acceptPrompt(input, "user-1");
+    runtime.emit({ type: "message_end", message });
+    runtime.finishTurn(message);
     runtime.beginTurn();
     runtime.streamAssistantText(output);
     runtime.finishTurn();
@@ -217,8 +275,127 @@ export class OmpHarness {
     return await run;
   }
 
+  async runPromptWithoutTurn(input: string): Promise<unknown> {
+    const session = this.requireSession();
+    this.omp.latestSession().promptAck = { agentInvoked: false };
+    return await session.run(input);
+  }
+
+  async startPromptWithFalseLocalOnlyResult(
+    input: string,
+  ): Promise<{ completed: () => boolean; completion: Promise<unknown> }> {
+    const session = this.requireSession();
+    const runtime = this.omp.latestSession();
+    runtime.promptAck = { requestId: "prompt-local-only" };
+    const promptStarted = runtime.nextPrompt();
+    const completion = session.run(input);
+    let isCompleted = false;
+    void completion.then(
+      () => {
+        isCompleted = true;
+        return undefined;
+      },
+      () => {
+        isCompleted = true;
+        return undefined;
+      },
+    );
+    await promptStarted;
+    await waitForImmediate();
+    runtime.emit({
+      type: "prompt_result",
+      id: "prompt-local-only",
+      agentInvoked: false,
+    });
+    return { completed: () => isCompleted, completion };
+  }
+
+  async runPromptAfterCorrelatedTrueResult(
+    input: string,
+    output: string,
+  ): Promise<{ completedBeforeTurn: boolean; result: unknown }> {
+    const session = this.requireSession();
+    const runtime = this.omp.latestSession();
+    runtime.promptAck = { requestId: "prompt-invoked", agentInvoked: false };
+    const promptStarted = runtime.nextPrompt();
+    const run = session.run(input);
+    let completed = false;
+    void run.then(
+      () => {
+        completed = true;
+        return undefined;
+      },
+      () => {
+        completed = true;
+        return undefined;
+      },
+    );
+    await promptStarted;
+    runtime.emit({
+      type: "prompt_result",
+      id: "prompt-invoked",
+      agentInvoked: true,
+    });
+    await waitForImmediate();
+    await waitForImmediate();
+    const completedBeforeTurn = completed;
+    runtime.acceptPrompt(input, "user-1");
+    runtime.beginTurn();
+    runtime.streamAssistantText(output);
+    runtime.finishTurn();
+    return { completedBeforeTurn, result: await run };
+  }
+
+  async runPromptAfterDelayedFalseLocalOnlyResult(
+    input: string,
+    output: string,
+  ): Promise<{ completedBeforeTurn: boolean; result: unknown }> {
+    const session = this.requireSession();
+    const runtime = this.omp.latestSession();
+    runtime.promptAck = { requestId: "prompt-1" };
+    const promptStarted = runtime.nextPrompt();
+    const run = session.run(input);
+    let completed = false;
+    void run.then(
+      () => {
+        completed = true;
+        return undefined;
+      },
+      () => {
+        completed = true;
+        return undefined;
+      },
+    );
+    await promptStarted;
+    await waitForImmediate();
+    runtime.emit({
+      type: "prompt_result",
+      id: "prompt-1",
+      agentInvoked: false,
+    });
+    await waitForImmediate();
+    const completedBeforeTurn = completed;
+    runtime.acceptPrompt(input, "user-1");
+    runtime.beginTurn();
+    runtime.streamAssistantText(output);
+    runtime.finishTurn();
+    return { completedBeforeTurn, result: await run };
+  }
+
+  async runAutonomousTurn(output: string): Promise<void> {
+    const runtime = this.omp.latestSession();
+    runtime.beginTurn();
+    runtime.streamAssistantText(output);
+    runtime.finishTurn();
+    await waitForImmediate();
+  }
+
   timeline(): AgentTimelineItem[] {
     return this.events.flatMap((event) => (event.type === "timeline" ? [event.item] : []));
+  }
+
+  eventTypes(): AgentStreamEvent["type"][] {
+    return this.events.map((event) => event.type);
   }
 
   async history(): Promise<AgentTimelineItem[]> {
@@ -231,6 +408,10 @@ export class OmpHarness {
 
   completedTurnCount(): number {
     return this.events.filter((event) => event.type === "turn_completed").length;
+  }
+
+  usageUpdates() {
+    return this.events.flatMap((event) => (event.type === "usage_updated" ? [event.usage] : []));
   }
 
   requestToolApproval(input: {
@@ -309,7 +490,9 @@ export class OmpHarness {
       .map(([callId]) => callId);
   }
 
-  subagentUpserts(): Array<{ id: string; status: string }> {
+  // `status` is optional on the upsert event — an upsert may report only model or usage. OMP
+  // always sets one, so this stays a plain string for assertions.
+  subagentUpserts(): Array<{ id: string; status: string | undefined }> {
     return this.events.flatMap((event) =>
       event.type === "provider_subagent" && event.event.type === "upsert"
         ? [{ id: event.event.id, status: event.event.status }]
@@ -323,6 +506,7 @@ export class OmpHarness {
 
   async close(): Promise<void> {
     await this.requireSession().close();
+    await waitForImmediate();
   }
 
   isClosed(): boolean {

@@ -152,6 +152,13 @@ export const OMP_MODES: AgentProviderModeDefinition[] = [
     isUnattended: true,
   },
   {
+    id: "write",
+    label: "Write Approval",
+    description: "Launches OMP with write approval mode — reads are free, writes require approval.",
+    icon: "ShieldAlert",
+    colorTier: "moderate",
+  },
+  {
     id: "ask",
     label: "Always Ask",
     description: "Launches OMP with always-ask approval mode for write and exec tools.",
@@ -167,6 +174,13 @@ const MOCK_LOAD_TEST_MODES: AgentProviderModeDefinition[] = [
     description: "Streams repeated markdown, reasoning, and tool calls for app stress testing",
     icon: "ShieldOff",
     colorTier: "dangerous",
+  },
+  {
+    id: "approval-test",
+    label: "Approval Test",
+    description: "Alternate development-only permission mode for preference tests",
+    icon: "ShieldCheck",
+    colorTier: "safe",
   },
 ];
 

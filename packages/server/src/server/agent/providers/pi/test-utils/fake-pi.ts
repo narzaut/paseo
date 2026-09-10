@@ -45,6 +45,12 @@ export interface FakePiSubagentMessagesResult {
   messages: PiAgentMessage[];
 }
 
+interface FakePiUserEntry {
+  id: string;
+  parentId: string | null;
+  text: string;
+}
+
 export class FakePi implements PiRuntime {
   readonly recordedLaunches: PiRuntimeLaunch[] = [];
   private readonly sessions: FakePiSession[] = [];
@@ -88,6 +94,10 @@ export class FakePi implements PiRuntime {
 
 export class FakePiSession implements PiRuntimeSession {
   readonly prompts: Array<{ message: string; imageCount: number }> = [];
+  readonly steerCalls: Array<{ message: string; imageCount: number }> = [];
+  steerError: Error | null = null;
+  readonly controlRequests: string[] = [];
+  clearQueueError: Error | null = null;
   readonly compactRequests: Array<{ customInstructions?: string }> = [];
   readonly setAutoCompactionRequests: boolean[] = [];
   readonly subagentSubscriptionRequests: FakePiSubagentSubscriptionLevel[] = [];
@@ -119,6 +129,7 @@ export class FakePiSession implements PiRuntimeSession {
   compactError: Error | null = null;
   emitCompactEnd = true;
   getStateError: Error | null = null;
+  getSessionStatsError: Error | null = null;
   promptAck: PiPromptAck = {};
   branchResponse: { text?: string; cancelled?: boolean } = { text: "" };
   readonly branchRequests: string[] = [];
@@ -193,6 +204,23 @@ export class FakePiSession implements PiRuntimeSession {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
 
+  async steer(
+    message: string,
+    images?: Array<{ type: "image"; data: string; mimeType: string }>,
+  ): Promise<void> {
+    this.steerCalls.push({ message, imageCount: images?.length ?? 0 });
+    if (this.steerError) {
+      throw this.steerError;
+    }
+  }
+
+  async clearQueue(): Promise<void> {
+    this.controlRequests.push("clear_queue");
+    if (this.clearQueueError) {
+      throw this.clearQueueError;
+    }
+  }
+
   async compact(customInstructions?: string): Promise<void> {
     this.compactRequests.push(customInstructions === undefined ? {} : { customInstructions });
     this.emit({ type: "compaction_start", reason: "manual" });
@@ -213,6 +241,7 @@ export class FakePiSession implements PiRuntimeSession {
   }
 
   async abort(): Promise<void> {
+    this.controlRequests.push("abort");
     this.abortRequested = true;
   }
 
@@ -244,6 +273,9 @@ export class FakePiSession implements PiRuntimeSession {
   }
 
   async getSessionStats(): Promise<PiSessionStats> {
+    if (this.getSessionStatsError) {
+      throw this.getSessionStatsError;
+    }
     return this.stats;
   }
 
@@ -344,9 +376,40 @@ export class FakePiSession implements PiRuntimeSession {
     }
   }
 
+  finishAgentRun({ message, willRetry }: { message: PiAgentMessage; willRetry: boolean }): void {
+    this.messages = [...this.messages, message];
+    this.emit({
+      type: "agent_end",
+      messages: this.messages,
+      willRetry,
+    });
+  }
+
+  settleTurn(): void {
+    this.emit({ type: "agent_settled" });
+  }
+
   finishTurn(message: PiAgentMessage = { role: "assistant", content: [] }): void {
+    this.finishAgentRun({ message, willRetry: false });
+    this.settleTurn();
+  }
+
+  finishLegacyTurn(message: PiAgentMessage = { role: "assistant", content: [] }): void {
     this.messages = [...this.messages, message];
     this.emit({ type: "agent_end", messages: this.messages });
+  }
+
+  finishSubmittedUserMessage(entry: FakePiUserEntry): void {
+    this.emit({
+      type: "message_end",
+      message: { role: "user", content: entry.text },
+    });
+    this.emit({
+      type: "extension_ui_request",
+      id: `submitted-user-${entry.id}`,
+      method: "notify",
+      message: `PASEO_SUBMITTED_USER_ENTRY ${JSON.stringify({ entry })}`,
+    });
   }
 
   private handleTreeNavigationCommand(message: string): void {

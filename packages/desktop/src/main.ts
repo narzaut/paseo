@@ -14,6 +14,7 @@ import {
   app,
   autoUpdater as electronAutoUpdater,
   BrowserWindow,
+  ClipboardItem,
   clipboard,
   Menu,
   ipcMain,
@@ -22,12 +23,14 @@ import {
   protocol,
   screen,
   session,
+  shell,
   webContents,
 } from "electron";
 import { registerDaemonManager } from "./daemon/daemon-manager.js";
 import { parsePassthroughCliArgsFromArgv, runPassthroughCli } from "./daemon/cli/passthrough.js";
 import { closeAllTransportSessions } from "./daemon/local-transport.js";
 import {
+  applyDesktopWindowChromeMode,
   registerWindowManager,
   getMainWindowChromeOptions,
   getWindowBackgroundColor,
@@ -40,13 +43,16 @@ import {
   buildStandardContextMenuItems,
 } from "./window/window-manager.js";
 import { setupDarwinCompositorWatchdog } from "./window/compositor-watchdog/index.js";
+import { resolveDesktopWindowChromeMode, windowChromeModeArgument } from "./window/chrome.js";
 import { registerDialogHandlers } from "./features/dialogs.js";
 import {
   registerNotificationHandlers,
   ensureNotificationCenterRegistration,
 } from "./features/notifications.js";
-import { registerOpenerHandlers } from "./features/opener.js";
+import { createExternalUrlOpener } from "./features/opener.js";
+import { createBrowserCaptureService } from "./features/browser-capture.js";
 import { registerEditorTargetHandlers } from "./features/editor-targets/ipc.js";
+import { resolveAppIconPath } from "./features/stamped-icon.js";
 import { setupApplicationMenu } from "./features/menu.js";
 import {
   BROWSER_NEW_TAB_REQUEST_EVENT,
@@ -74,7 +80,11 @@ import {
   readLegacyPaseoBrowserIds,
 } from "./features/browser-profile.js";
 import { parseOpenProjectPathFromArgv } from "./open-project-routing.js";
-import { PendingOpenProjectStore } from "./pending-open-project-store.js";
+import {
+  createDesktopWindowOwner,
+  type DesktopWindowOwner,
+  type OwnedDesktopWindow,
+} from "./window/desktop-window-owner.js";
 import { getDesktopSettingsStore } from "./settings/desktop-settings-electron.js";
 import { clampWindowStateToWorkAreas, createWindowStateStore } from "./settings/window-state.js";
 import {
@@ -83,23 +93,50 @@ import {
 } from "./daemon/daemon-manager.js";
 import {
   createQuitLifecycle,
+  registerExternalQuitSignals,
   stopDesktopManagedDaemonOnQuitIfNeeded,
 } from "./daemon/quit-lifecycle.js";
 import { runDesktopStartup } from "./desktop-startup.js";
-import { autoUpdateInstalledSkills } from "./integrations/skills/index.js";
 import { registerBrowserAutomationIpc } from "./features/browser-automation/ipc.js";
 import { BrowserKeyboard } from "./features/browser-keyboard/index.js";
 import { installAppUpdateOnQuit } from "./features/auto-updater.js";
+import {
+  buildAgentDeepLinkRoute,
+  parseAgentDeepLink,
+  type AgentDeepLinkTarget,
+} from "@getpaseo/protocol/agent-deep-link";
+import { AgentNavigationInbox, parseAgentDeepLinkFromArgv } from "./agent-navigation.js";
 
 const DEV_SERVER_URL = process.env.EXPO_DEV_URL ?? "http://localhost:8081";
 const APP_SCHEME = "paseo";
 const PASEO_DEBUG = process.env.PASEO_DEBUG === "1";
 const DISABLE_SINGLE_INSTANCE_LOCK = process.env.PASEO_DISABLE_SINGLE_INSTANCE_LOCK === "1";
 const APP_NAME = process.env.PASEO_TEST_APP_NAME?.trim() || "Paseo";
+const DESKTOP_WINDOW_CHROME_MODE = resolveDesktopWindowChromeMode({
+  platform: process.platform,
+  override: process.env.PASEO_DESKTOP_WINDOW_CONTROLS,
+  isPackaged: app.isPackaged,
+});
 const UPDATE_QUIT_DEADLINE_MS = 5_000;
 const pendingBrowserWindowOpenRequests = new PendingBrowserWindowOpenRequests();
+const agentNavigationInbox = new AgentNavigationInbox();
+
+// A second-instance launch can arrive before the packaged protocol handler,
+// IPC handlers, and first window exist. Wait for full bootstrap, not just
+// app.whenReady(), before delivering navigation to the renderer.
+let resolveBootstrapComplete: () => void;
+const bootstrapComplete = new Promise<void>((resolve) => {
+  resolveBootstrapComplete = resolve;
+});
+let bootstrapIsComplete = false;
 
 app.setName(APP_NAME);
+log.info("[desktop] app startup", {
+  version: app.getVersion(),
+  platform: process.platform,
+  arch: process.arch,
+  isPackaged: app.isPackaged,
+});
 
 interface AttachedBrowserInput {
   browserId: string;
@@ -316,12 +353,13 @@ let pendingOpenProjectPath = parseOpenProjectPathFromArgv({
   argv: process.argv,
   isDefaultApp: process.defaultApp,
 });
+let pendingAgentNavigation = parseAgentDeepLinkFromArgv(process.argv);
 
 // Each window pulls its own pending open-project path on mount, keyed by
 // webContents id, so deep-linked windows (second-instance launches, the
 // in-app "Open in new window" action) land on the right project without
 // racing a global.
-const pendingOpenProjectStore = new PendingOpenProjectStore();
+let desktopWindowOwner: DesktopWindowOwner<AgentDeepLinkTarget>;
 
 if (PASEO_DEBUG) {
   log.info("[open-project] argv:", process.argv);
@@ -333,7 +371,7 @@ if (PASEO_DEBUG) {
 // a race where the push event arrives before React registers its listener.
 ipcMain.handle("paseo:get-pending-open-project", (event) => {
   const webContentsId = event.sender.id;
-  const result = pendingOpenProjectStore.take(webContentsId);
+  const result = desktopWindowOwner.takePendingProject(webContentsId);
   log.info("[open-project] renderer requested pending path:", {
     webContentsId,
     pendingPath: result,
@@ -341,38 +379,9 @@ ipcMain.handle("paseo:get-pending-open-project", (event) => {
   return result;
 });
 
-function normalizeBrowserCaptureRect(
-  rect: unknown,
-): { x: number; y: number; width: number; height: number } | null {
-  if (!rect || typeof rect !== "object") {
-    return null;
-  }
-  const candidate = rect as Record<string, unknown>;
-  const x = candidate.x;
-  const y = candidate.y;
-  const width = candidate.width;
-  const height = candidate.height;
-  if (
-    typeof x !== "number" ||
-    typeof y !== "number" ||
-    typeof width !== "number" ||
-    typeof height !== "number" ||
-    !Number.isFinite(x) ||
-    !Number.isFinite(y) ||
-    !Number.isFinite(width) ||
-    !Number.isFinite(height) ||
-    width <= 0 ||
-    height <= 0
-  ) {
-    return null;
-  }
-  return {
-    x: Math.max(0, Math.round(x)),
-    y: Math.max(0, Math.round(y)),
-    width: Math.round(width),
-    height: Math.round(height),
-  };
-}
+ipcMain.handle("paseo:agent-navigation:ready", (event) => {
+  return agentNavigationInbox.windowReady(event.sender.id);
+});
 
 ipcMain.handle("paseo:browser:register-attached", (event, rawInput: unknown) => {
   const input = readAttachedBrowserInput(rawInput);
@@ -442,6 +451,18 @@ ipcMain.handle("paseo:browser:set-workspace-active-browser", (event, rawInput: u
   }
 });
 
+ipcMain.handle("paseo:browser:focus", (event, browserId: unknown): boolean => {
+  if (typeof browserId !== "string" || browserId.trim().length === 0) {
+    return false;
+  }
+  const contents = getPaseoBrowserWebContentsForHostWindow(browserId, event.sender.id);
+  if (!contents) {
+    return false;
+  }
+  contents.focus();
+  return true;
+});
+
 ipcMain.handle("paseo:browser:open-devtools", (event, browserId: unknown) => {
   if (typeof browserId !== "string" || browserId.trim().length === 0) {
     const result = {
@@ -502,77 +523,32 @@ ipcMain.handle("paseo:browser:clear-profile", async (_event, rawLegacyBrowserIds
   });
 });
 
-ipcMain.handle(
-  "paseo:browser:capture-element",
-  async (event, browserId: unknown, rect: unknown) => {
-    if (typeof browserId !== "string" || browserId.trim().length === 0) {
-      return null;
-    }
-    const contents = getPaseoBrowserWebContentsForHostWindow(browserId, event.sender.id);
-    if (!contents || contents.isDestroyed()) {
-      return null;
-    }
-    const captureRect = normalizeBrowserCaptureRect(rect);
-    if (!captureRect) {
-      return null;
-    }
-    try {
-      // capturePage expects an integer rect in CSS pixels relative to the
-      // guest viewport, which matches getBoundingClientRect() on the page.
-      const image = await contents.capturePage(captureRect);
-      if (image.isEmpty()) {
-        return null;
+const browserCapture = createBrowserCaptureService<Electron.NativeImage>({
+  findGuest: getPaseoBrowserWebContentsForHostWindow,
+  decodeImage: (dataUrl) => nativeImage.createFromDataURL(dataUrl),
+  clipboard: {
+    write: async ({ text, image }) => {
+      const items: Record<string, string | Blob> = {};
+      if (text) items["text/plain"] = text;
+      if (image) {
+        const png = image.toPNG();
+        const bytes = new Uint8Array(png.byteLength);
+        bytes.set(png);
+        items["image/png"] = new Blob([bytes], { type: "image/png" });
       }
-      return image.toDataURL();
-    } catch (error) {
-      log.warn("[browser-capture] capture-element.failed", {
-        browserId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return null;
-    }
+      await clipboard.write([new ClipboardItem(items)]);
+    },
   },
+  warn: (event, details) => log.warn(`[browser-capture] ${event}`, details),
+});
+
+ipcMain.handle("paseo:browser:capture-element", (event, browserId: unknown, rect: unknown) =>
+  browserCapture.capture({ browserId, hostWebContentsId: event.sender.id, rect }),
 );
 
-ipcMain.handle("paseo:browser:copy-element", (_event, payload: unknown): boolean => {
-  if (!payload || typeof payload !== "object") {
-    return false;
-  }
-  const { text, imageDataUrl } = payload as { text?: unknown; imageDataUrl?: unknown };
-  const copyText = typeof text === "string" && text.length > 0 ? text : null;
-
-  // Resolve the image first so we can write the clipboard exactly once and
-  // avoid flashing an intermediate text-only state.
-  let image: Electron.NativeImage | null = null;
-  if (typeof imageDataUrl === "string" && imageDataUrl.startsWith("data:image")) {
-    try {
-      const candidate = nativeImage.createFromDataURL(imageDataUrl);
-      if (!candidate.isEmpty()) {
-        image = candidate;
-      }
-    } catch (error) {
-      log.warn("[browser-capture] copy-element.image-failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  // Writing from the main process avoids the renderer's navigator.clipboard
-  // NotAllowedError, which fires when focus is inside the guest <webview>.
-  if (copyText && image) {
-    clipboard.write({ text: copyText, image });
-    return true;
-  }
-  if (image) {
-    clipboard.writeImage(image);
-    return true;
-  }
-  if (copyText) {
-    clipboard.writeText(copyText);
-    return true;
-  }
-  return false;
-});
+ipcMain.handle("paseo:browser:copy-element", (_event, payload: unknown) =>
+  browserCapture.copy(payload),
+);
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -613,11 +589,15 @@ function getWindowIconCandidates(): string[] {
   }
   if (process.platform === "win32") {
     return [
+      path.resolve(__dirname, "../assets/icon-dev.png"),
       path.resolve(__dirname, "../assets/icon.ico"),
       path.resolve(__dirname, "../assets/icon.png"),
     ];
   }
-  return [path.resolve(__dirname, "../assets/icon.png")];
+  return [
+    path.resolve(__dirname, "../assets/icon-dev.png"),
+    path.resolve(__dirname, "../assets/icon.png"),
+  ];
 }
 
 function getWindowIconPath(): string | null {
@@ -625,13 +605,42 @@ function getWindowIconPath(): string | null {
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }
 
-function applyAppIcon(): void {
-  if (process.platform !== "darwin") {
+function getDevBuildLabel(): string | null {
+  if (app.isPackaged) {
+    return null;
+  }
+  return process.env.EXPO_PUBLIC_PASEO_DEV_BUILD_LABEL?.trim() || null;
+}
+
+let cachedEffectiveIconPath: string | null = null;
+
+async function getEffectiveAppIconPath(): Promise<string | null> {
+  if (cachedEffectiveIconPath !== null) {
+    return cachedEffectiveIconPath;
+  }
+  const baseIconPath = getWindowIconPath();
+  if (app.isPackaged || !baseIconPath) {
+    cachedEffectiveIconPath = baseIconPath;
+    return baseIconPath;
+  }
+  const devLabel = getDevBuildLabel();
+  cachedEffectiveIconPath = await resolveAppIconPath({
+    isPackaged: false,
+    baseIconPath,
+    devLabel,
+    cacheDir: app.getPath("userData"),
+  });
+  return cachedEffectiveIconPath;
+}
+
+async function applyAppIcon(): Promise<void> {
+  // Packaged apps keep the bundle icon and its macOS system appearance.
+  if (app.isPackaged || process.platform !== "darwin") {
     return;
   }
 
-  const iconPath = path.resolve(__dirname, "../assets/icon.png");
-  if (!existsSync(iconPath)) {
+  const iconPath = await getEffectiveAppIconPath();
+  if (!iconPath) {
     return;
   }
 
@@ -653,11 +662,13 @@ function getWorkAreasPrimaryFirst(): Electron.Rectangle[] {
 
 async function createWindow(
   options: {
-    pendingOpenProjectPath?: string | null;
+    initialRoute?: string | null;
     restoreWindowState?: boolean;
+    onCreated?: (webContentsId: number) => void;
+    onClosed?: (webContentsId: number) => void;
   } = {},
 ): Promise<BrowserWindow> {
-  const iconPath = getWindowIconPath();
+  const iconPath = await getEffectiveAppIconPath();
   const systemTheme = resolveSystemWindowTheme();
 
   // Only the first window of a session restores and persists saved geometry.
@@ -681,21 +692,28 @@ async function createWindow(
     backgroundColor: getWindowBackgroundColor(systemTheme),
     ...(iconPath ? { icon: iconPath } : {}),
     ...getMainWindowChromeOptions({
-      platform: process.platform,
-      theme: systemTheme,
+      mode: DESKTOP_WINDOW_CHROME_MODE,
     }),
     webPreferences: {
       preload: getPreloadPath(),
+      additionalArguments: [windowChromeModeArgument(DESKTOP_WINDOW_CHROME_MODE)],
       contextIsolation: true,
       nodeIntegration: false,
       webviewTag: true,
     },
   });
+  applyDesktopWindowChromeMode({ win: mainWindow, mode: DESKTOP_WINDOW_CHROME_MODE });
 
   const webContentsId = mainWindow.webContents.id;
-  pendingOpenProjectStore.set(webContentsId, options.pendingOpenProjectPath);
+  options.onCreated?.(webContentsId);
+  mainWindow.webContents.on("did-start-navigation", (_event, _url, isSameDocument, isMainFrame) => {
+    if (isMainFrame && !isSameDocument) {
+      agentNavigationInbox.windowLoading(webContentsId);
+    }
+  });
   mainWindow.on("closed", () => {
-    pendingOpenProjectStore.delete(webContentsId);
+    options.onClosed?.(webContentsId);
+    agentNavigationInbox.removeWindow(webContentsId);
     unregisterPaseoBrowserHost(webContentsId);
     browserKeyboard.detachHost(webContentsId);
   });
@@ -759,26 +777,84 @@ async function createWindow(
   if (!app.isPackaged) {
     const { loadReactDevTools } = await import("./features/react-devtools.js");
     await loadReactDevTools();
-    await mainWindow.loadURL(DEV_SERVER_URL);
+    const initialUrl = options.initialRoute
+      ? new URL(options.initialRoute, `${DEV_SERVER_URL}/`).toString()
+      : DEV_SERVER_URL;
+    await mainWindow.loadURL(initialUrl);
     return mainWindow;
   }
 
-  await mainWindow.loadURL(`${APP_SCHEME}://app/`);
+  await mainWindow.loadURL(`${APP_SCHEME}://app${options.initialRoute ?? "/"}`);
   return mainWindow;
 }
+
+function ownedDesktopWindow(win: BrowserWindow): OwnedDesktopWindow<AgentDeepLinkTarget> {
+  return {
+    webContentsId: win.webContents.id,
+    isDestroyed: () => win.isDestroyed(),
+    isVisible: () => win.isVisible(),
+    isMinimized: () => win.isMinimized(),
+    restore: () => win.restore(),
+    show: () => win.show(),
+    focus: () => win.focus(),
+    sendAgent: (target) => win.webContents.send("paseo:event:open-agent", target),
+  };
+}
+
+desktopWindowOwner = createDesktopWindowOwner<AgentDeepLinkTarget>({
+  async create(input) {
+    const win = await createWindow({
+      initialRoute: input.initialRoute,
+      restoreWindowState: input.restoreWindowState,
+      onCreated: input.onCreated,
+      onClosed: input.onClosed,
+    });
+    return ownedDesktopWindow(win);
+  },
+  windows: () => BrowserWindow.getAllWindows().map(ownedDesktopWindow),
+  focusedWindow: () => {
+    const win = BrowserWindow.getFocusedWindow();
+    if (!win) return null;
+    return ownedDesktopWindow(win);
+  },
+  agentRoute: buildAgentDeepLinkRoute,
+  deliverAgent: (webContentsId, target) =>
+    agentNavigationInbox.deliverOrQueue(webContentsId, target),
+});
 
 // ---------------------------------------------------------------------------
 // App lifecycle
 // ---------------------------------------------------------------------------
 
-// Resolves once bootstrap() has registered the custom protocol handler and IPC
-// handlers and created the first window. second-instance window creation waits
-// on this rather than app.whenReady(): in packaged mode createWindow loads
-// `paseo://app/`, which fails if the protocol handler isn't registered yet, and
-// a second instance can arrive mid-cold-start.
-let resolveBootstrapComplete: () => void;
-const bootstrapComplete = new Promise<void>((resolve) => {
-  resolveBootstrapComplete = resolve;
+function receiveAgentDeepLink(input: string): void {
+  const target = parseAgentDeepLink(input);
+  if (!target) {
+    return;
+  }
+
+  if (bootstrapIsComplete) {
+    void desktopWindowOwner
+      .openOrFocusAgent(target)
+      .catch((error) => log.error("[window] failed to route agent link", error));
+    return;
+  }
+
+  pendingAgentNavigation = target;
+  void bootstrapComplete.then(() => {
+    if (pendingAgentNavigation !== target) {
+      return undefined;
+    }
+    pendingAgentNavigation = null;
+    void desktopWindowOwner
+      .openOrFocusAgent(target)
+      .catch((error) => log.error("[window] failed to route queued agent link", error));
+    return undefined;
+  });
+}
+
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  receiveAgentDeepLink(url);
 });
 
 function setupSingleInstanceLock(): boolean {
@@ -794,6 +870,14 @@ function setupSingleInstanceLock(): boolean {
   }
 
   app.on("second-instance", (_event, commandLine) => {
+    const agentTarget = parseAgentDeepLinkFromArgv(commandLine);
+    if (agentTarget) {
+      void bootstrapComplete
+        .then(() => desktopWindowOwner.openOrFocusAgent(agentTarget))
+        .catch((error) => log.error("[window] failed to route second-instance agent link", error));
+      return;
+    }
+
     log.info("[open-project] second-instance commandLine:", commandLine);
     const openProjectPath = parseOpenProjectPathFromArgv({
       argv: commandLine,
@@ -804,7 +888,7 @@ function setupSingleInstanceLock(): boolean {
     // window rather than focusing the existing one. Wait for bootstrap (not just
     // app.whenReady) so the protocol + IPC handlers exist before the window loads.
     void bootstrapComplete
-      .then(() => createWindow({ pendingOpenProjectPath: openProjectPath }))
+      .then(() => desktopWindowOwner.openAdditional({ pendingProjectPath: openProjectPath }))
       .catch((error) => {
         log.error("[window] failed to create window from second-instance", error);
       });
@@ -865,20 +949,21 @@ async function bootstrap(): Promise<void> {
     return net.fetch(pathToFileURL(filePath).toString());
   });
 
-  applyAppIcon();
+  await applyAppIcon();
   setupApplicationMenu({
     onNewWindow: () => {
-      void createWindow().catch((error) => {
+      void desktopWindowOwner.openAdditional().catch((error) => {
         log.error("[window] failed to create window from menu", error);
       });
     },
   });
   ensureNotificationCenterRegistration();
   registerDaemonManager();
-  registerWindowManager();
+  registerWindowManager({ mode: DESKTOP_WINDOW_CHROME_MODE });
   registerDialogHandlers();
   registerNotificationHandlers();
-  registerOpenerHandlers();
+  const openExternalUrl = createExternalUrlOpener({ open: shell.openExternal });
+  ipcMain.handle("paseo:opener:openUrl", (_event, value: unknown) => openExternalUrl(value));
   registerEditorTargetHandlers();
   registerBrowserAutomationIpc();
 
@@ -889,36 +974,43 @@ async function bootstrap(): Promise<void> {
       options && typeof options === "object" && "pendingOpenProjectPath" in options
         ? (options as { pendingOpenProjectPath?: unknown }).pendingOpenProjectPath
         : null;
-    await createWindow({
-      pendingOpenProjectPath: typeof pendingPath === "string" ? pendingPath : null,
+    await desktopWindowOwner.openAdditional({
+      pendingProjectPath: typeof pendingPath === "string" ? pendingPath : null,
     });
   });
 
   // The first window of the session restores and persists saved geometry.
-  await createWindow({ pendingOpenProjectPath, restoreWindowState: true });
+  const initialAgentNavigation = pendingAgentNavigation;
+  pendingAgentNavigation = null;
+  await desktopWindowOwner.openPrimary({
+    initialRoute: initialAgentNavigation ? buildAgentDeepLinkRoute(initialAgentNavigation) : null,
+    pendingProjectPath: pendingOpenProjectPath,
+  });
   pendingOpenProjectPath = null;
 
   // Protocol + IPC handlers and the first window now exist: release any
   // second-instance launches that arrived during cold start.
+  bootstrapIsComplete = true;
   resolveBootstrapComplete();
 
-  app.on("activate", async () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      await createWindow({ restoreWindowState: true });
-    }
+  if (pendingAgentNavigation) {
+    const target = pendingAgentNavigation;
+    pendingAgentNavigation = null;
+    await desktopWindowOwner.openOrFocusAgent(target);
+  }
+
+  app.on("activate", () => {
+    void desktopWindowOwner.restoreWhenActivated().catch((error) => {
+      console.error("Failed to restore a desktop window after activation", error);
+    });
   });
 }
 
 void runDesktopStartup({
-  hasPendingOpenProjectPath: Boolean(pendingOpenProjectPath),
+  hasPendingGuiLaunchRequest: Boolean(pendingOpenProjectPath || pendingAgentNavigation),
   runCliPassthroughIfRequested,
   inheritLoginShellEnv,
   bootstrapGui: bootstrap,
-  autoUpdateInstalledSkills: () => {
-    void autoUpdateInstalledSkills().catch((error) => {
-      log.error("[skills] auto-update failed", error);
-    });
-  },
 }).catch((error) => {
   const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
   process.stderr.write(`${message}\n`);
@@ -959,8 +1051,12 @@ const quitLifecycle = createQuitLifecycle({
 });
 
 // electron-updater forwards this event through Electron's built-in autoUpdater.
-electronAutoUpdater.on("before-quit-for-update", quitLifecycle.handleBeforeQuitForUpdate);
+electronAutoUpdater.on("before-quit-for-update", () => {
+  log.info("[auto-updater] before-quit-for-update", { currentVersion: app.getVersion() });
+  quitLifecycle.handleBeforeQuitForUpdate();
+});
 app.on("before-quit", quitLifecycle.handleBeforeQuit);
+registerExternalQuitSignals({ signals: process, quit: () => app.quit() });
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {

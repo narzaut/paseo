@@ -88,7 +88,7 @@ describe("OMP history mapper", () => {
     ]);
   });
 
-  test("absorbs replayed omp system-notice custom messages as synthetic tool calls", async () => {
+  test("maps replayed OMP system-notice custom messages to notifications", async () => {
     const notice = [
       "<system-notice>",
       "Background job DocsSmokeTwo has completed. Resume your work using the result below.",
@@ -124,24 +124,9 @@ describe("OMP history mapper", () => {
         type: "timeline",
         provider: "omp",
         item: {
-          type: "tool_call",
-          callId: "omp-notice:DocsSmokeTwo",
-          name: "task_notification",
-          status: "completed",
-          detail: {
-            type: "plain_text",
-            label: "Background job DocsSmokeTwo completed",
-            text: notice,
-            icon: "wrench",
-          },
-          metadata: {
-            synthetic: true,
-            source: "omp_system_notice",
-            taskId: "DocsSmokeTwo",
-            subagentType: "explore",
-            status: "completed",
-          },
-          error: null,
+          type: "notification",
+          level: "info",
+          message: "Background job DocsSmokeTwo completed",
         },
       },
       {
@@ -151,6 +136,107 @@ describe("OMP history mapper", () => {
           type: "user_message",
           text: "second prompt",
           messageId: "entry-user-2",
+        },
+      },
+    ]);
+  });
+
+  test("renders replayed OMP advisor messages as synthetic tool-call blocks", async () => {
+    await expect(
+      collectHistory([
+        {
+          role: "custom",
+          content: [
+            {
+              type: "text",
+              text: '<advisory severity="blocker">Add an authorization check.</advisory>',
+            },
+          ],
+          customType: "advisor",
+          id: "advisor-message-1",
+          display: true,
+          details: {
+            notes: [
+              {
+                note: "Add an authorization check.",
+                severity: "blocker",
+                advisor: "security",
+              },
+              { note: "Exercise the failure path.", severity: "concern" },
+            ],
+          },
+        },
+      ]),
+    ).resolves.toEqual([
+      {
+        type: "timeline",
+        provider: "omp",
+        item: {
+          type: "tool_call",
+          callId: "omp-advisor:advisor-message-1",
+          name: "advisor",
+          status: "completed",
+          detail: {
+            type: "plain_text",
+            label: "Advisor · 2 notes · 1 blocker",
+            text: "[blocker] [security] Add an authorization check.\n\n[concern] Exercise the failure path.",
+            icon: "brain",
+          },
+          metadata: {
+            synthetic: true,
+            source: "omp_advisor",
+            noteCount: 2,
+            blockerCount: 1,
+          },
+          error: null,
+        },
+      },
+    ]);
+  });
+
+  test("omits replayed custom messages only when display is false", async () => {
+    await expect(
+      collectHistory(
+        [
+          { role: "user", content: "first prompt" },
+          { role: "custom", content: "hidden reminder", display: false },
+          { role: "custom", content: "visible explicit custom", display: true },
+          { role: "custom", content: "visible legacy custom" },
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "assistant reply" }],
+            responseId: "assistant-history",
+          },
+        ],
+        [{ id: "entry-user-1", text: "first prompt" }],
+      ),
+    ).resolves.toEqual([
+      {
+        type: "timeline",
+        provider: "omp",
+        item: {
+          type: "user_message",
+          text: "first prompt",
+          messageId: "entry-user-1",
+        },
+      },
+      {
+        type: "timeline",
+        provider: "omp",
+        item: { type: "assistant_message", text: "visible explicit custom" },
+      },
+      {
+        type: "timeline",
+        provider: "omp",
+        item: { type: "assistant_message", text: "visible legacy custom" },
+      },
+      {
+        type: "timeline",
+        provider: "omp",
+        item: {
+          type: "assistant_message",
+          text: "assistant reply",
+          messageId: "assistant-history",
         },
       },
     ]);

@@ -1,20 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { useRetainedPanelActive } from "@/components/retained-panel";
-import { useChangesPreferences } from "@/hooks/use-changes-preferences";
 import { useCheckoutCommitsQuery, type CheckoutCommitsQueryResult } from "@/git/use-commits-query";
 import { ThemedChevron, chevronColorMapping } from "@/git/themed-chevron";
+import { normalizeBranchOptionName } from "@/utils/branch-suggestions";
 import { CommitRow } from "./commit-row";
 
 interface CommitsSectionProps {
   serverId: string;
   cwd: string;
   onCommitPress: (sha: string) => void;
+  collapsed?: boolean;
+  onCollapsedChange?: (collapsed: boolean) => void;
 }
-
-const SKELETON_ROW_KEYS = ["commit-skeleton-1", "commit-skeleton-2", "commit-skeleton-3"];
 
 function CommitsSectionSkeleton() {
   const { t } = useTranslation();
@@ -25,15 +26,13 @@ function CommitsSectionSkeleton() {
       style={styles.skeleton}
       testID="commits-section-skeleton"
     >
-      {SKELETON_ROW_KEYS.map((key) => (
-        <View key={key} style={styles.skeletonRow}>
-          <View style={styles.skeletonDot} />
-          <View style={styles.skeletonSha} />
-          <View style={styles.skeletonSubject} />
-          <View style={styles.skeletonTimestamp} />
-          <View style={styles.skeletonCaret} />
-        </View>
-      ))}
+      <View style={styles.skeletonRow}>
+        <View style={styles.skeletonDot} />
+        <View style={styles.skeletonSha} />
+        <View style={styles.skeletonSubject} />
+        <View style={styles.skeletonTimestamp} />
+        <View style={styles.skeletonCaret} />
+      </View>
     </View>
   );
 }
@@ -58,27 +57,43 @@ function CommitsSectionContent({
   if (query.status !== "loaded") {
     return <CommitsSectionSkeleton />;
   }
-  if (query.data.commits.length === 0) {
+  const workspaceCommits = query.data.commits.filter((commit) => !commit.isOnBase);
+  const baseRef = normalizeBranchOptionName(query.data.baseRef) ?? t("workspace.git.diff.base");
+  if (workspaceCommits.length === 0) {
     return (
-      <Text style={styles.emptyRow} testID="commits-section-empty">
-        {t("workspace.git.diff.commits.empty")}
-      </Text>
+      <View style={styles.noWorkspaceCommitsRow} testID="commits-section-no-workspace-commits">
+        <Text style={styles.noWorkspaceCommitsText}>
+          {t("workspace.git.diff.commits.noneAhead", { baseRef })}
+        </Text>
+      </View>
     );
   }
   return (
     <View style={styles.list}>
-      {query.data.commits.map((commit) => (
-        <CommitRow key={commit.sha} commit={commit} now={now} onCommitPress={onCommitPress} />
+      {workspaceCommits.map((commit, index) => (
+        <CommitRow
+          key={commit.sha}
+          commit={commit}
+          isFirst={index === 0}
+          isLast={index === workspaceCommits.length - 1}
+          now={now}
+          onCommitPress={onCommitPress}
+        />
       ))}
     </View>
   );
 }
 
-export function CommitsSection({ serverId, cwd, onCommitPress }: CommitsSectionProps) {
+export function CommitsSection({
+  serverId,
+  cwd,
+  onCommitPress,
+  collapsed = true,
+  onCollapsedChange,
+}: CommitsSectionProps) {
   const { t } = useTranslation();
-  const { preferences, updatePreferences } = useChangesPreferences();
+  const insets = useSafeAreaInsets();
   const isPanelActive = useRetainedPanelActive();
-  const collapsed = preferences.commitsCollapsed;
   const [now, setNow] = useState(() => new Date());
   const displayNow = useMemo(() => (isPanelActive ? new Date() : now), [isPanelActive, now]);
   const query = useCheckoutCommitsQuery({
@@ -91,8 +106,8 @@ export function CommitsSection({ serverId, cwd, onCommitPress }: CommitsSectionP
     if (collapsed) {
       setNow(new Date());
     }
-    void updatePreferences({ commitsCollapsed: !collapsed });
-  }, [collapsed, updatePreferences]);
+    onCollapsedChange?.(!collapsed);
+  }, [collapsed, onCollapsedChange]);
 
   useEffect(() => {
     if (collapsed || !isPanelActive) {
@@ -106,14 +121,21 @@ export function CommitsSection({ serverId, cwd, onCommitPress }: CommitsSectionP
     () => [styles.headerChevron, !collapsed && styles.headerChevronExpanded],
     [collapsed],
   );
+  const containerStyle = useMemo(
+    () => [styles.container, { paddingBottom: insets.bottom }],
+    [insets.bottom],
+  );
 
   if (query.status === "unsupported") {
     return null;
   }
-  const commitCount = query.status === "loaded" ? query.data.commits.length : null;
+  const commitCount =
+    query.status === "loaded"
+      ? query.data.commits.filter((commit) => !commit.isOnBase).length
+      : null;
 
   return (
-    <View style={styles.container}>
+    <View style={containerStyle}>
       <Pressable
         accessibilityRole="button"
         testID="commits-section-header"
@@ -169,11 +191,11 @@ const styles = StyleSheet.create((theme) => ({
     transform: [{ rotate: "90deg" }],
   },
   title: {
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.base,
     color: theme.colors.foreground,
   },
   count: {
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     color: theme.colors.foregroundMuted,
     flex: 1,
   },
@@ -183,15 +205,20 @@ const styles = StyleSheet.create((theme) => ({
   list: {
     paddingBottom: theme.spacing[1],
   },
-  emptyRow: {
-    fontSize: theme.fontSize.xs,
-    color: theme.colors.foregroundMuted,
+  noWorkspaceCommitsRow: {
+    flexDirection: "row",
+    alignItems: "center",
     paddingLeft: theme.spacing[2],
     paddingRight: theme.spacing[3],
-    paddingVertical: theme.spacing[2],
+    paddingTop: theme.spacing[1],
+    paddingBottom: theme.spacing[2],
+  },
+  noWorkspaceCommitsText: {
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foregroundMuted,
   },
   errorRow: {
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     color: theme.colors.statusDanger,
     paddingLeft: theme.spacing[2],
     paddingRight: theme.spacing[3],

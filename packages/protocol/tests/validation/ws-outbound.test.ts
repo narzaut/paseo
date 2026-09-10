@@ -138,6 +138,129 @@ const SourceSchema = z.object({
     );
   });
 
+  it("accepts project config responses with and without setup commit status", () => {
+    const payload = {
+      requestId: "project-config-read",
+      repoRoot: "/repo",
+      ok: true,
+      config: null,
+      revision: null,
+    };
+    const envelope = (
+      responsePayload: typeof payload & {
+        hasUncommittedWorktreeSetupChanges?: boolean;
+      },
+    ) => ({
+      type: "session",
+      message: {
+        type: "read_project_config_response",
+        payload: responsePayload,
+      },
+    });
+
+    expect(GeneratedWSOutboundMessageSchema.safeParse(envelope(payload)).success).toBe(true);
+    expect(
+      GeneratedWSOutboundMessageSchema.safeParse(
+        envelope({ ...payload, hasUncommittedWorktreeSetupChanges: true }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("accepts a compact provider snapshot envelope", () => {
+    const envelope = {
+      type: "session",
+      message: {
+        type: "get_providers_snapshot_response",
+        payload: {
+          entries: [],
+          compactSnapshot: {
+            entries: [
+              {
+                provider: "pi",
+                status: "ready",
+                enabled: true,
+                models: [{ id: "model-a", label: "Model A", thinkingSet: 0 }],
+              },
+            ],
+            thinkingSets: [
+              {
+                options: [{ id: "high", label: "High", isDefault: true }],
+                defaultOptionId: "high",
+              },
+            ],
+          },
+          snapshotHash: "snapshot-hash",
+          generatedAt: "2026-08-04T00:00:00.000Z",
+          requestId: "provider-snapshot",
+        },
+      },
+    };
+
+    expect(GeneratedWSOutboundMessageSchema.safeParse(envelope)).toEqual({
+      success: true,
+      data: envelope,
+    });
+  });
+
+  it.each([
+    {
+      name: "dedicated attention message",
+      message: {
+        type: "agent_attention_required",
+        payload: {
+          agentId: "agent-1",
+          reason: "finished",
+          timestamp: "2026-07-22T18:00:00.000Z",
+          shouldNotify: true,
+          notification: {
+            title: "Agent finished",
+            body: "Done",
+            data: {
+              serverId: "server-1",
+              workspaceId: "workspace-1",
+              agentId: "agent-1",
+              reason: "finished",
+            },
+          },
+        },
+      },
+    },
+    {
+      name: "agent stream attention event",
+      message: {
+        type: "agent_stream",
+        payload: {
+          agentId: "agent-1",
+          timestamp: "2026-07-22T18:00:00.000Z",
+          event: {
+            type: "attention_required",
+            provider: "codex",
+            reason: "finished",
+            timestamp: "2026-07-22T18:00:00.000Z",
+            shouldNotify: true,
+            notification: {
+              title: "Agent finished",
+              body: "Done",
+              data: {
+                serverId: "server-1",
+                workspaceId: "workspace-1",
+                agentId: "agent-1",
+                reason: "finished",
+              },
+            },
+          },
+        },
+      },
+    },
+  ])("preserves workspaceId in a $name", ({ message }) => {
+    const envelope = { type: "session", message };
+
+    expect(GeneratedWSOutboundMessageSchema.safeParse(envelope)).toEqual({
+      success: true,
+      data: envelope,
+    });
+  });
+
   it("emits runtime imports with .js extensions", async () => {
     const generated = await readFile(generatedWSOutboundPath, "utf8");
     expect(generated).toContain('from "../../validation/ws-outbound-schema-metadata.js"');

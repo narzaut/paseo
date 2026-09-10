@@ -16,6 +16,7 @@ export interface HermesRoomMessage {
   replyToMessageId: string | null;
   mentionAgentIds: string[];
   createdAt: string;
+  updatedAt?: string;
   // Monotonic server cursor (bumped on create AND edit). Optional on the wire
   // for back-compat; the fork daemon always sets it. Drives the edit-aware
   // wait so streamed/edited messages reach the room.

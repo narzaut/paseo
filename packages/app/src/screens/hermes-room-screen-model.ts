@@ -182,10 +182,11 @@ function mapEnvelopeToStreamItem(
     }
     case "activity_log":
       return {
-        kind: "activity_log",
+        kind: "notification",
+        sourceType: "notification",
         id: message.id,
         timestamp,
-        activityType: envelope.activityType,
+        level: envelope.activityType === "error" ? "error" : "info",
         message: envelope.message,
       } satisfies StreamItem;
   }

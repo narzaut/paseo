@@ -24,6 +24,13 @@ import type { Theme } from "@/styles/theme";
 
 const EMPTY_PENDING_PERMISSIONS = new Map<string, PendingPermission>();
 const HERMES_ATTACHMENT_MENU_ITEMS: [] = [];
+const HERMES_TURN_PRESENTATION = {
+  isActive: false,
+  isCancelling: false,
+  startedAt: null,
+  turnId: null,
+} as const;
+const HERMES_TEXT_REPLACEMENT = { key: "hermes-room-initial", text: "" };
 
 function updateAttachments(
   previous: UserComposerAttachment[],
@@ -56,12 +63,8 @@ function HermesRoomStatusFooter({
   return (
     <View style={styles.gatewayFooterRow}>
       <View style={styles.gatewayStatusRow}>
-        <View
-          style={[styles.gatewayStatusDot, getDotStyle(pendingRestart, gatewayStatus)]}
-        />
-        <Text style={styles.gatewayStatusText}>
-          {getStatusText(pendingRestart, gatewayStatus)}
-        </Text>
+        <View style={[styles.gatewayStatusDot, getDotStyle(pendingRestart, gatewayStatus)]} />
+        <Text style={styles.gatewayStatusText}>{getStatusText(pendingRestart, gatewayStatus)}</Text>
       </View>
       <Button
         variant="ghost"
@@ -191,6 +194,7 @@ function HermesRoomReadyState({
           context={agent}
           streamItems={streamItems}
           pendingPermissions={EMPTY_PENDING_PERMISSIONS}
+          turnPresentation={HERMES_TURN_PRESENTATION}
           isAuthoritativeHistoryReady
           toast={toastApi}
         />
@@ -202,6 +206,7 @@ function HermesRoomReadyState({
         onSubmitMessage={handleSubmitMessage}
         value={draft}
         onChangeText={setDraft}
+        textReplacement={HERMES_TEXT_REPLACEMENT}
         attachments={attachments}
         onChangeAttachments={handleChangeAttachments}
         cwd="."
@@ -285,7 +290,7 @@ const styles = StyleSheet.create((theme: Theme) => ({
   },
   gatewayStatusText: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
   },
   gatewayFooterRow: {
     flexDirection: "row",

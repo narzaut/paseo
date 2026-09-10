@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import pino from "pino";
 import {
@@ -36,7 +40,7 @@ function isTimelineResponse(msg: SessionOutboundMessage): boolean {
 interface FakeDiffSubscription {
   cwd: string;
   compare: CheckoutDiffCompareInput;
-  listener: (snapshot: CheckoutDiffSnapshotPayload) => void;
+  emit(snapshot: CheckoutDiffSnapshotPayload): void;
   unsubscribeCalls: number;
 }
 
@@ -45,18 +49,29 @@ function createFakeDiffSubscriber(initial: CheckoutDiffSnapshotPayload) {
   const refreshedCwds: string[] = [];
   const subscriber: CheckoutDiffSubscriber = {
     subscribe: async (params, listener) => {
+      let isSubscribed = true;
       const subscription: FakeDiffSubscription = {
         cwd: params.cwd,
         compare: params.compare,
-        listener,
         unsubscribeCalls: 0,
+        emit: (snapshot) => {
+          if (isSubscribed) {
+            listener(snapshot);
+          }
+        },
       };
+      const unsubscribe = () => {
+        if (!isSubscribed) {
+          return;
+        }
+        isSubscribed = false;
+        subscription.unsubscribeCalls += 1;
+      };
+      params.signal?.addEventListener("abort", unsubscribe, { once: true });
       subscriptions.push(subscription);
       return {
         initial: { ...initial, cwd: params.cwd },
-        unsubscribe: () => {
-          subscription.unsubscribeCalls += 1;
-        },
+        unsubscribe,
       };
     },
     scheduleRefreshForCwd: (cwd) => {
@@ -428,6 +443,88 @@ describe("CheckoutSession", () => {
     });
   });
 
+  describe("discard changes", () => {
+    it("discards the paths, notifies git mutation, refreshes diffs, and confirms success", async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "checkout-session-discard-"));
+      const cwd = realpathSync(tempDir);
+      try {
+        execFileSync("git", ["init", "-q"], { cwd });
+        execFileSync("git", ["config", "user.email", "test@example.com"], { cwd });
+        execFileSync("git", ["config", "user.name", "Test User"], { cwd });
+        writeFileSync(join(cwd, "file.txt"), "original\n");
+        execFileSync("git", ["add", "file.txt"], { cwd });
+        execFileSync("git", ["commit", "-qm", "initial"], { cwd });
+        writeFileSync(join(cwd, "file.txt"), "changed\n");
+
+        const { subscriber, refreshedCwds } = createFakeDiffSubscriber({
+          cwd: "",
+          files: [],
+          error: null,
+        });
+        const { checkout, emitted, gitMutationCalls } = makeCheckoutSession({ diff: subscriber });
+
+        await checkout.handleCheckoutDiscardChangesRequest({
+          type: "checkout.discard_changes.request",
+          cwd,
+          paths: ["file.txt"],
+          requestId: "discard-1",
+        });
+
+        expect(readFileSync(join(cwd, "file.txt"), "utf8").replaceAll("\r\n", "\n")).toBe(
+          "original\n",
+        );
+        expect(gitMutationCalls.notifyGitMutation).toEqual([
+          { cwd, reason: "discard-changes", options: undefined },
+        ]);
+        expect(refreshedCwds).toEqual([cwd]);
+        expect(emitted).toEqual([
+          {
+            type: "checkout.discard_changes.response",
+            payload: { cwd, success: true, error: null, requestId: "discard-1" },
+          },
+        ]);
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it("returns the checkout error without notifying git or refreshing diffs", async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "checkout-session-discard-error-"));
+      const cwd = realpathSync(tempDir);
+      try {
+        const { subscriber, refreshedCwds } = createFakeDiffSubscriber({
+          cwd: "",
+          files: [],
+          error: null,
+        });
+        const { checkout, emitted, gitMutationCalls } = makeCheckoutSession({ diff: subscriber });
+
+        await checkout.handleCheckoutDiscardChangesRequest({
+          type: "checkout.discard_changes.request",
+          cwd,
+          paths: ["file.txt"],
+          requestId: "discard-error",
+        });
+
+        expect(gitMutationCalls.notifyGitMutation).toEqual([]);
+        expect(refreshedCwds).toEqual([]);
+        expect(emitted).toEqual([
+          {
+            type: "checkout.discard_changes.response",
+            payload: {
+              cwd,
+              success: false,
+              error: { code: "NOT_GIT_REPO", message: `Not a git repository: ${cwd}` },
+              requestId: "discard-error",
+            },
+          },
+        ]);
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe("diff subscriptions", () => {
     it("opens a subscription, streams updates tagged with the id, and tears down on unsubscribe", async () => {
       const { subscriber, subscriptions } = createFakeDiffSubscriber({
@@ -453,7 +550,7 @@ describe("CheckoutSession", () => {
       ]);
       expect(subscriptions).toHaveLength(1);
 
-      subscriptions[0].listener({
+      subscriptions[0].emit({
         cwd: "/repo",
         files: [],
         error: { code: "UNKNOWN", message: "transient" },
@@ -547,6 +644,16 @@ describe("CheckoutSession", () => {
           payload: expect.objectContaining({ cwd: "/repo", currentBranch: "main" }),
         },
       ]);
+    });
+
+    it("does not emit the same checkout status twice", () => {
+      const { checkout, emitted } = makeCheckoutSession();
+      const snapshot = createGitSnapshot("/repo", "main");
+
+      checkout.emitStatusUpdate("/repo", snapshot);
+      checkout.emitStatusUpdate("/repo", snapshot);
+
+      expect(emitted).toHaveLength(1);
     });
   });
 

@@ -112,6 +112,7 @@ export class FakeOmpSession implements OmpRuntimeSession {
   readonly hostToolUpdates: OmpRpcHostToolUpdate[] = [];
   getStateRequestCount = 0;
   abortRequested = false;
+  abortError: Error | null = null;
   readonly canceledExtensionUiRequests: string[] = [];
   readonly extensionUiResponses: Array<{
     id: string;
@@ -238,6 +239,9 @@ export class FakeOmpSession implements OmpRuntimeSession {
   }
 
   async abort(): Promise<void> {
+    if (this.abortError) {
+      throw this.abortError;
+    }
     this.abortRequested = true;
   }
 
@@ -270,7 +274,7 @@ export class FakeOmpSession implements OmpRuntimeSession {
     return this.messages;
   }
 
-  async getAvailableModels(_timeoutMs?: number): Promise<OmpModel[]> {
+  async getAvailableModels(_timeoutMs?: number | null): Promise<OmpModel[]> {
     return this.models;
   }
 
@@ -411,6 +415,12 @@ export class FakeOmpSession implements OmpRuntimeSession {
   finishTurn(message: OmpAgentMessage = { role: "assistant", content: [] }): void {
     this.messages = [...this.messages, message];
     this.emit({ type: "agent_end", messages: this.messages });
+  }
+
+  finishTurnWithEmptyAgentEnd(message: OmpAgentMessage = { role: "assistant", content: [] }): void {
+    this.messages = [...this.messages, message];
+    this.emit({ type: "message_end", message });
+    this.emit({ type: "agent_end", messages: [] });
   }
 
   beginTurn(): void {

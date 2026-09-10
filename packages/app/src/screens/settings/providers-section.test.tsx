@@ -44,6 +44,7 @@ const { theme, snapshotState, configState, patchConfigMock, openProviderSettings
 );
 
 vi.mock("react-native", () => ({
+  Platform: { OS: "web" },
   View: ({ children, testID }: { children?: React.ReactNode; testID?: string }) =>
     React.createElement("div", { "data-testid": testID }, children),
   Text: ({ children }: { children?: React.ReactNode }) =>
@@ -90,7 +91,7 @@ vi.mock("react-native-unistyles", () => ({
     create: (factory: unknown) =>
       typeof factory === "function" ? (factory as (t: typeof theme) => unknown)(theme) : factory,
   },
-  useUnistyles: () => ({ theme }),
+  useUnistyles: () => ({ theme, rt: { breakpoint: "md" } }),
 }));
 
 vi.mock("lucide-react-native", () => {
@@ -163,6 +164,10 @@ vi.mock("@/components/ui/switch", () => ({
 
 vi.mock("@/components/ui/loading-spinner", () => ({
   LoadingSpinner: () => React.createElement("span", { "data-testid": "loading-spinner" }),
+}));
+
+vi.mock("@/components/settings/headings/settings-info-tip", () => ({
+  SettingsInfoTip: () => null,
 }));
 
 vi.mock("@/components/ui/dropdown-menu", () => ({
@@ -303,6 +308,7 @@ const disabledCodexEntry: ProviderSnapshotEntry = {
 
 function makeConfig(providers: MutableDaemonConfig["providers"] = {}): MutableDaemonConfig {
   return {
+    relay: { enabled: false },
     mcp: { injectIntoAgents: false },
     browserTools: { enabled: false },
     providers,
