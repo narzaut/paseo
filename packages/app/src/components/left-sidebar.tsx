@@ -42,9 +42,13 @@ import { RetainedPanelActivity } from "@/components/retained-panel";
 import type { SidebarWorkspaceGroup } from "@/components/sidebar/sidebar-labels";
 import type { SidebarProjectIconTarget } from "@/utils/sidebar-project-row-model";
 import { type SidebarGroupMode, useSidebarViewStore } from "@/stores/sidebar-view-store";
-import { useHosts } from "@/runtime/host-runtime";
+import { useHostRuntimeClient, useHosts } from "@/runtime/host-runtime";
 import { usePanelStore } from "@/stores/panel-store";
-import { useActiveWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
+import {
+  navigateToWorkspace,
+  useActiveWorkspaceSelection,
+} from "@/stores/navigation-active-workspace-store";
+import { ensureHermesRoomContainer } from "@/utils/hermes-room-container";
 import { useOwnsWindowChromeCorner, WindowChromeSafeArea } from "@/utils/desktop-window";
 import { useCloseAgentListGesture } from "@/mobile-panels/gestures";
 import { MobilePanelOverlay } from "@/mobile-panels/presentation";
@@ -198,21 +202,42 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
   const hosts = useHosts();
   const activeWorkspaceSelection = useActiveWorkspaceSelection();
   const activeHermesServerId = activeWorkspaceSelection?.serverId ?? hosts[0]?.serverId ?? null;
+  const hermesClient = useHostRuntimeClient(activeHermesServerId ?? "");
+
+  const openHermesRoom = useCallback(async () => {
+    const serverId = activeHermesServerId;
+    if (!serverId) {
+      return;
+    }
+    try {
+      if (hermesClient) {
+        const workspaceId = await ensureHermesRoomContainer({ serverId, client: hermesClient });
+        if (workspaceId) {
+          navigateToWorkspace({
+            serverId,
+            workspaceId,
+            target: { kind: "hermes_room" },
+          });
+          return;
+        }
+      }
+    } catch {
+      // fall through to the standalone route
+    }
+    router.push(buildHermesRoute(serverId));
+  }, [activeHermesServerId, hermesClient]);
 
   const handleHermesMobile = useCallback(() => {
     if (!activeHermesServerId) {
       return;
     }
     showMobileAgent();
-    router.push(buildHermesRoute(activeHermesServerId));
-  }, [activeHermesServerId, showMobileAgent]);
+    void openHermesRoom();
+  }, [activeHermesServerId, openHermesRoom, showMobileAgent]);
 
   const handleHermesDesktop = useCallback(() => {
-    if (!activeHermesServerId) {
-      return;
-    }
-    router.push(buildHermesRoute(activeHermesServerId));
-  }, [activeHermesServerId]);
+    void openHermesRoom();
+  }, [openHermesRoom]);
 
   const labels = useMemo(
     (): SidebarLabels => ({

@@ -77,6 +77,7 @@ import { isNative, isWeb } from "@/constants/platform";
 import { pickDirectory } from "@/desktop/pick-directory";
 import { useFetchQuery } from "@/data/query";
 import { getOpenProjectFailureReason, registerProjectDescriptor } from "@/hooks/open-project";
+import { isHermesRoomContainerRootPath } from "@/utils/hermes-room-container";
 import { useIsLocalDaemon, useLocalDaemonServerId } from "@/hooks/use-is-local-daemon";
 import { useCloneGithubProject, useOpenProject } from "@/hooks/use-open-project";
 import {
@@ -370,7 +371,12 @@ export function AddProjectFlow({ request, onClose }: AddProjectFlowProps) {
   const host = hostId ? state.hosts.find((candidate) => candidate.serverId === hostId) : null;
   const client = useHostRuntimeClient(hostId ?? "");
   const isLocalDaemon = useIsLocalDaemon(hostId ?? "");
-  const recommendedPaths = useRecommendedProjectPaths(hostId);
+  const rawRecommendedPaths = useRecommendedProjectPaths(hostId);
+  // Never suggest the hidden Hermes room container directory as a project.
+  const recommendedPaths = useMemo(
+    () => rawRecommendedPaths.filter((path) => !isHermesRoomContainerRootPath(path)),
+    [rawRecommendedPaths],
+  );
   const openProject = useOpenProject(hostId);
   const cloneGithubProject = useCloneGithubProject(hostId);
   const upsertProject = useCallback(

@@ -269,6 +269,7 @@ export function ExplorerSidebarTabRail({
   const { t } = useTranslation();
   const groups = useWorkspaceTabLaunchCatalog({
     serverId: normalizedServerId,
+    workspaceId: normalizedWorkspaceId,
     purpose: "supporting",
     host: "explorer",
   });

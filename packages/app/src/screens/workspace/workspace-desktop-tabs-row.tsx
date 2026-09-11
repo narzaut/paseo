@@ -216,6 +216,7 @@ function TabLabelMeasurement({
 
 interface WorkspaceNewTabButtonProps {
   serverId: string;
+  workspaceId: string;
   paneId?: string;
   shortcutKeys: ShortcutKey[][] | null;
   placement: "inline" | "toolbar";
@@ -223,6 +224,7 @@ interface WorkspaceNewTabButtonProps {
 
 function WorkspaceNewTabButton({
   serverId,
+  workspaceId,
   paneId,
   shortcutKeys,
   placement,
@@ -242,6 +244,7 @@ function WorkspaceNewTabButton({
       </ToolbarButton>
       <WorkspaceNewTabMenuContent
         serverId={serverId}
+        workspaceId={workspaceId}
         purpose="primary"
         host="main"
         paneId={paneId}
@@ -258,6 +261,7 @@ function WorkspacePaneToolbarActions({
   showMaximizeAction,
   paneMaximized,
   serverId,
+  workspaceId,
   paneId,
   newTabShortcutKeys,
   onSplitRight,
@@ -269,6 +273,7 @@ function WorkspacePaneToolbarActions({
   showMaximizeAction: boolean;
   paneMaximized: boolean;
   serverId: string;
+  workspaceId: string;
   paneId?: string;
   newTabShortcutKeys: ShortcutKey[][] | null;
   onSplitRight?: () => void;
@@ -304,6 +309,7 @@ function WorkspacePaneToolbarActions({
         <WorkspaceNewTabButton
           placement="toolbar"
           serverId={serverId}
+          workspaceId={workspaceId}
           paneId={paneId}
           shortcutKeys={newTabShortcutKeys}
         />
@@ -1365,6 +1371,7 @@ function ResolvedWorkspaceDesktopTabsRow({
             <WorkspaceNewTabButton
               placement="inline"
               serverId={normalizedServerId}
+              workspaceId={normalizedWorkspaceId}
               paneId={paneId}
               shortcutKeys={newTabKeys}
             />
@@ -1384,6 +1391,7 @@ function ResolvedWorkspaceDesktopTabsRow({
         showMaximizeAction={showPaneMaximizeAction}
         paneMaximized={paneMaximized}
         serverId={normalizedServerId}
+        workspaceId={normalizedWorkspaceId}
         paneId={paneId}
         newTabShortcutKeys={newTabKeys}
         onSplitRight={onSplitRight}

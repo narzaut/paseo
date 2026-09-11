@@ -82,16 +82,18 @@ function LaunchItemShortcut({ actionId }: { actionId: string }) {
 
 export function WorkspaceNewTabMenuContent({
   serverId,
+  workspaceId,
   purpose,
   host,
   paneId,
 }: {
   serverId: string;
+  workspaceId: string;
   purpose: WorkspaceTabLaunchPurpose;
   host: PaneHost;
   paneId?: string;
 }) {
-  const groups = useWorkspaceTabLaunchCatalog({ serverId, purpose, host });
+  const groups = useWorkspaceTabLaunchCatalog({ serverId, workspaceId, purpose, host });
 
   return (
     <DropdownMenuContent

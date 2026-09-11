@@ -14,6 +14,8 @@ import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { resolvePluginIcon } from "@/plugins/icons";
 import { useInstalledPlugins } from "@/plugins/registry";
 import { pluginPanelSupportsLocation } from "@/plugins/workspace-panels/locations";
+import { useWorkspaceFields } from "@/stores/session-store-hooks";
+import { HERMES_ROOM_CONTAINER_DIR } from "@/utils/hermes-room-container";
 import { buildSettingsHostSectionRoute } from "@/utils/host-routes";
 import type { NewTabSelection } from "@/workspace-tabs/new-tab";
 import type { WorkspaceTabTarget } from "@/workspace-tabs/model";
@@ -95,10 +97,11 @@ function getLaunchPresentation(kind: WorkspaceTabTarget["kind"]): PanelPresentat
 
 export function useWorkspaceTabLaunchCatalog(input: {
   serverId: string;
+  workspaceId: string;
   purpose: WorkspaceTabLaunchPurpose;
   host: PaneHost;
 }): readonly WorkspaceTabLaunchGroup[] {
-  const { serverId, purpose, host } = input;
+  const { serverId, workspaceId, purpose, host } = input;
   const { t } = useTranslation();
   const router = useRouter();
   const launcher = useContext(NewTabLauncherContext);
@@ -106,6 +109,11 @@ export function useWorkspaceTabLaunchCatalog(input: {
   const { config } = useDaemonConfig(serverId);
   const plugins = useInstalledPlugins();
   ensurePanelsRegistered();
+  // The Hermes room container stays inanimate: terminals are the only content
+  // it can launch, so its new-tab catalog is filtered to terminal entries.
+  const isHermesRoomContainer =
+    useWorkspaceFields(serverId, workspaceId, (workspace) => workspace.workspaceDirectory) ===
+    HERMES_ROOM_CONTAINER_DIR;
 
   const launchSelection = useCallback(
     (selection: NewTabSelection) => (destination: WorkspaceTabLaunchDestination) => {
@@ -249,10 +257,19 @@ export function useWorkspaceTabLaunchCatalog(input: {
         },
       });
     }
+    if (isHermesRoomContainer) {
+      return groups
+        .map((group) => ({
+          ...group,
+          items: group.items.filter((item) => item.panelKind === "terminal"),
+        }))
+        .filter((group) => group.items.length > 0);
+    }
     return groups;
   }, [
     config?.terminalProfiles,
     editTerminalProfiles,
+    isHermesRoomContainer,
     launchSelection,
     launcher,
     plugins,

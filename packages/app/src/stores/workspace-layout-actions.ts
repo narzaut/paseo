@@ -267,6 +267,11 @@ export interface WorkspaceTabSnapshot {
   standaloneTerminalIds: Iterable<string>;
   hasActivePendingTerminalCreate?: boolean;
   hasActivePendingDraftCreate?: boolean;
+  /**
+   * Container workspaces (the Hermes room host) must never auto-seed a draft
+   * tab: they own their content (the room tab is seeded separately).
+   */
+  suppressDefaultDraftSeed?: boolean;
 }
 
 export const DEFAULT_PANE_ID = "main";
@@ -2389,7 +2394,13 @@ function seedDraftForEmptyWorkspace(input: {
   const hasContentTab = collectAllTabs(input.layout.root).some(
     (tab) => tab.target.kind !== "new_tab" && !explorerTabIds.has(tab.tabId),
   );
-  if (!ready || creatingContent || hasWorkspaceEntities || hasContentTab) {
+  if (
+    !ready ||
+    creatingContent ||
+    hasWorkspaceEntities ||
+    hasContentTab ||
+    input.snapshot.suppressDefaultDraftSeed === true
+  ) {
     return input.layout;
   }
 

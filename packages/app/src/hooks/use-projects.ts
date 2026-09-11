@@ -13,6 +13,10 @@ import {
   type WorkspaceDescriptor,
 } from "@/stores/session-store";
 import { buildProjects, type ProjectHost, type ProjectSummary } from "@/utils/projects";
+import {
+  isHermesRoomContainerProject,
+  isHermesRoomContainerWorkspace,
+} from "@/utils/hermes-room-container";
 
 export interface ProjectHostError {
   serverId: string;
@@ -86,8 +90,12 @@ function selectProjectHostReplicas(
       return {
         serverId: host.serverId,
         serverName: host.label,
-        workspaces: Array.from(session?.workspaces.values() ?? []),
-        projects: Array.from(session?.projects.values() ?? []),
+        workspaces: Array.from(session?.workspaces.values() ?? []).filter(
+          (workspace) => !isHermesRoomContainerWorkspace(workspace),
+        ),
+        projects: Array.from(session?.projects.values() ?? []).filter(
+          (project) => !isHermesRoomContainerProject(project),
+        ),
       };
     });
 }

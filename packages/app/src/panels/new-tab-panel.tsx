@@ -130,11 +130,12 @@ function useNewTabDescriptor() {
 }
 
 const NewTabPanel = memo(function NewTabPanel(): ReactElement {
-  const { host, serverId, tabId } = usePaneContext();
+  const { host, serverId, workspaceId, tabId } = usePaneContext();
   const { isInteractive, focusPane } = usePaneFocus();
   const containerRef = useRef<View | null>(null);
   const groups = useWorkspaceTabLaunchCatalog({
     serverId,
+    workspaceId,
     purpose: host === "explorer" ? "supporting" : "primary",
     host,
   });

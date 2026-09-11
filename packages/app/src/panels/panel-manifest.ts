@@ -82,6 +82,11 @@ const manifests = {
     supportedHosts: ["main"],
     resourceKey: (target) => target.workspaceId,
   },
+  hermes_room: {
+    kind: "hermes_room",
+    supportedHosts: ["main"],
+    resourceKey: () => "hermes_room",
+  },
   commit_diff: {
     kind: "commit_diff",
     supportedHosts: ["main", "explorer"],

@@ -114,6 +114,11 @@ import { getDesktopHost } from "@/desktop/host";
 import { buildProviderCommand } from "@/utils/provider-command-templates";
 import { generateDraftId } from "@/stores/draft-keys";
 import { resolveWorkspaceRouteId } from "@/utils/workspace-identity";
+import { isHermesRoomContainerWorkspaceDescriptor } from "@/utils/hermes-room-container";
+import {
+  useHermesRoomTabSeed,
+  useWorkspaceSetupStatusSync,
+} from "@/screens/workspace/use-hermes-room-container";
 import { useOpenAgentTabLabels } from "@/subagents/use-open-agent-tab-labels";
 import {
   WorkspaceTabPresentationResolver,
@@ -396,6 +401,9 @@ function getFallbackTabOptionDescription(
   }
   if (tab.target.kind === "pull_request") {
     return labels.pullRequest;
+  }
+  if (tab.target.kind === "hermes_room") {
+    return "Hermes";
   }
   if (tab.target.kind === "plugin") {
     return tab.target.panelId;
@@ -1560,6 +1568,10 @@ function WorkspaceScreenContent({
     [workspaceId],
   );
   const workspaceDescriptor = useWorkspace(normalizedServerId, normalizedWorkspaceId);
+  const isHermesRoomContainer = useMemo(
+    () => isHermesRoomContainerWorkspaceDescriptor(workspaceDescriptor),
+    [workspaceDescriptor],
+  );
   useEffect(() => {
     if (!normalizedServerId || !normalizedWorkspaceId || workspaceDescriptor) return;
     void getHostRuntimeStore()
@@ -2051,11 +2063,13 @@ function WorkspaceScreenContent({
         hasActivePendingTerminalCreate:
           createTerminalMutation.isPending || pendingTerminalCreateInput !== null,
         hasActivePendingDraftCreate: hasActivePendingDraftCreateInWorkspace,
+        suppressDefaultDraftSeed: isHermesRoomContainer,
       }),
     );
   }, [
     hasHydratedAgents,
     hasHydratedWorkspaceLayoutStore,
+    isHermesRoomContainer,
     pendingTerminalCreateInput,
     createTerminalMutation.isPending,
     isRouteFocused,
@@ -2084,6 +2098,10 @@ function WorkspaceScreenContent({
         (tab) => tab.target.kind === "setup" && tab.target.workspaceId === normalizedWorkspaceId,
       ),
     [normalizedWorkspaceId, uiTabs],
+  );
+  const hasHermesRoomTab = useMemo(
+    () => uiTabs.some((tab) => tab.target.kind === "hermes_room"),
+    [uiTabs],
   );
   const navigateToTabId = useCallback(
     function navigateToTabId(tabId: string) {
@@ -2129,6 +2147,11 @@ function WorkspaceScreenContent({
     if (!persistenceKey) {
       return;
     }
+    // The Hermes room container never participates in the setup flow; its
+    // room tab is seeded by the dedicated effect below instead.
+    if (isHermesRoomContainer) {
+      return;
+    }
     if (!shouldSeedWorkspaceSetupTab(workspaceSetupSnapshot)) {
       return;
     }
@@ -2159,6 +2182,7 @@ function WorkspaceScreenContent({
   }, [
     claimFailedSetupSurface,
     hasSetupTab,
+    isHermesRoomContainer,
     isRouteFocused,
     normalizedWorkspaceId,
     normalizedServerId,
@@ -2167,22 +2191,25 @@ function WorkspaceScreenContent({
     workspaceSetupSnapshot,
   ]);
 
-  useEffect(() => {
-    if (!isRouteFocused || !client || !normalizedServerId || !normalizedWorkspaceId) {
-      return;
-    }
-    ensureWorkspaceSetupStatus({
-      serverId: normalizedServerId,
-      workspaceId: normalizedWorkspaceId,
-      client,
-    });
-  }, [
+  // The Hermes room container hosts exactly one content kind: the room tab.
+  // If it was closed, re-seed it in the background so the icon always lands
+  // on a room (mirrors how normal workspaces always have a usable tab).
+  useHermesRoomTabSeed({
+    isHermesRoomContainer,
+    isRouteFocused,
+    persistenceKey,
+    hasHermesRoomTab,
+    openWorkspaceTabInBackground,
+  });
+
+  useWorkspaceSetupStatusSync({
+    enabled: !isHermesRoomContainer,
+    isRouteFocused,
+    serverId: normalizedServerId,
+    workspaceId: normalizedWorkspaceId,
     client,
     ensureWorkspaceSetupStatus,
-    isRouteFocused,
-    normalizedServerId,
-    normalizedWorkspaceId,
-  ]);
+  });
 
   const handleOpenFileFromChat = useCallback(
     (location: WorkspaceFileLocation, parentTabId?: string | null) => {

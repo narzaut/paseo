@@ -11,9 +11,11 @@ import { ScreenHeader } from "@/components/headers/screen-header";
 import { ScreenTitle } from "@/components/headers/screen-title";
 import { SidebarMenuToggle } from "@/components/headers/menu-header";
 import type { UserComposerAttachment } from "@/attachments/types";
-import type { MessagePayload } from "@/composer/types";
+import type { MessagePayload, TextReplacement } from "@/composer/types";
 import type { HermesRoomMessage } from "@/hooks/use-hermes-room";
 import { useHermesRoom } from "@/hooks/use-hermes-room";
+import { buildDraftStoreKey } from "@/stores/draft-keys";
+import { useDraftStore } from "@/stores/draft-store";
 import {
   buildHermesRoomAgent,
   buildHermesRoomStreamItems,
@@ -30,7 +32,10 @@ const HERMES_TURN_PRESENTATION = {
   startedAt: null,
   turnId: null,
 } as const;
-const HERMES_TEXT_REPLACEMENT = { key: "hermes-room-initial", text: "" };
+// Reserved draft-store identity for the single Hermes room per host. The draft
+// lives in the shared composer draft store, so it survives unmounts, pane
+// switches, and reloads exactly like workspace chat drafts do.
+export const HERMES_ROOM_DRAFT_AGENT_ID = "hermes-room";
 
 function updateAttachments(
   previous: UserComposerAttachment[],
@@ -81,20 +86,76 @@ function HermesRoomStatusFooter({
   );
 }
 
+function useHermesRoomDraft(serverId: string) {
+  const draftStoreKey = useMemo(
+    () => buildDraftStoreKey({ serverId, agentId: HERMES_ROOM_DRAFT_AGENT_ID }),
+    [serverId],
+  );
+  const [text, setText] = useState("");
+  const revisionRef = useRef(0);
+  const [textReplacement, setTextReplacement] = useState<TextReplacement>(() => ({
+    key: `${draftStoreKey}:0`,
+    text: "",
+  }));
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      await useDraftStore.getState().hydrateDraftInput({ draftKey: draftStoreKey });
+      if (cancelled) {
+        return;
+      }
+      const storedText = useDraftStore.getState().getDraftInput(draftStoreKey)?.text ?? "";
+      if (storedText.length > 0) {
+        revisionRef.current += 1;
+        setTextReplacement({ key: `${draftStoreKey}:${revisionRef.current}`, text: storedText });
+      }
+      setText(storedText);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [draftStoreKey]);
+
+  const editText = useCallback(
+    (nextText: string) => {
+      setText(nextText);
+      const store = useDraftStore.getState();
+      if (nextText.length === 0) {
+        store.clearDraftInput({ draftKey: draftStoreKey, lifecycle: "abandoned" });
+        return;
+      }
+      store.saveDraftInput({ draftKey: draftStoreKey, draft: { text: nextText, attachments: [] } });
+    },
+    [draftStoreKey],
+  );
+
+  const clear = useCallback(
+    (lifecycle: "sent" | "abandoned") => {
+      useDraftStore.getState().clearDraftInput({ draftKey: draftStoreKey, lifecycle });
+      setText("");
+    },
+    [draftStoreKey],
+  );
+
+  return { text, editText, textReplacement, clear };
+}
+
 function HermesRoomReadyState({
   serverId,
   messages,
   gatewayStatus,
   sendMessage,
+  isFocused,
 }: {
   serverId: string;
   messages: HermesRoomMessage[];
   gatewayStatus: "connected" | "disconnected";
   sendMessage: (text: string) => Promise<void>;
+  isFocused: boolean;
 }) {
-  const isFocused = useIsFocused();
   const { api: toastApi, toast, dismiss } = useToastHost();
-  const [draft, setDraft] = useState("");
+  const draftInput = useHermesRoomDraft(serverId);
   const [attachments, setAttachments] = useState<UserComposerAttachment[]>([]);
   const [pendingRestart, setPendingRestart] = useState(false);
   const restartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -140,10 +201,13 @@ function HermesRoomReadyState({
     }
   }, [pendingRestart, sendMessage, toastApi]);
 
-  const clearDraft = useCallback((_lifecycle: "sent" | "abandoned") => {
-    setDraft("");
-    setAttachments([]);
-  }, []);
+  const handleClearDraft = useCallback(
+    (lifecycle: "sent" | "abandoned") => {
+      draftInput.clear(lifecycle);
+      setAttachments([]);
+    },
+    [draftInput],
+  );
 
   const handleChangeAttachments = useCallback(
     (
@@ -178,15 +242,7 @@ function HermesRoomReadyState({
   );
 
   return (
-    <View style={styles.root} testID="hermes-room-screen">
-      <ScreenHeader
-        left={
-          <>
-            <SidebarMenuToggle />
-            <ScreenTitle>Hermes</ScreenTitle>
-          </>
-        }
-      />
+    <View style={styles.root}>
       <View style={styles.contentContainer}>
         <AgentStreamView
           agentId={HERMES_ROOM_AGENT_ID}
@@ -204,13 +260,13 @@ function HermesRoomReadyState({
         serverId={serverId}
         isPaneFocused={isFocused}
         onSubmitMessage={handleSubmitMessage}
-        value={draft}
-        onChangeText={setDraft}
-        textReplacement={HERMES_TEXT_REPLACEMENT}
+        value={draftInput.text}
+        onChangeText={draftInput.editText}
+        textReplacement={draftInput.textReplacement}
         attachments={attachments}
         onChangeAttachments={handleChangeAttachments}
         cwd="."
-        clearDraft={clearDraft}
+        clearDraft={handleClearDraft}
         autoFocus={isFocused}
         attachmentMenuItemsOverride={HERMES_ATTACHMENT_MENU_ITEMS}
         footer={footer}
@@ -222,7 +278,17 @@ function HermesRoomReadyState({
 
 const MemoizedHermesRoomReadyState = memo(HermesRoomReadyState);
 
-export function HermesRoomScreen({ serverId }: { serverId: string }) {
+/**
+ * The Hermes room's chat body — shared by the standalone route and the
+ * workspace-shell panel so both render the identical room machinery.
+ */
+export function HermesRoomContent({
+  serverId,
+  isFocused,
+}: {
+  serverId: string;
+  isFocused: boolean;
+}) {
   const { messages, status, error, gatewayStatus, sendMessage } = useHermesRoom(serverId);
 
   if (status === "loading") {
@@ -247,11 +313,34 @@ export function HermesRoomScreen({ serverId }: { serverId: string }) {
       messages={messages}
       gatewayStatus={gatewayStatus}
       sendMessage={sendMessage}
+      isFocused={isFocused}
     />
   );
 }
 
+export function HermesRoomScreen({ serverId }: { serverId: string }) {
+  const isFocused = useIsFocused();
+
+  return (
+    <View style={styles.screenRoot} testID="hermes-room-screen">
+      <ScreenHeader
+        left={
+          <>
+            <SidebarMenuToggle />
+            <ScreenTitle>Hermes</ScreenTitle>
+          </>
+        }
+      />
+      <HermesRoomContent serverId={serverId} isFocused={isFocused} />
+    </View>
+  );
+}
+
 const styles = StyleSheet.create((theme: Theme) => ({
+  screenRoot: {
+    flex: 1,
+    backgroundColor: theme.colors.surface0,
+  },
   root: {
     flex: 1,
     backgroundColor: theme.colors.surface0,

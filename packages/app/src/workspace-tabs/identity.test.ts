@@ -196,3 +196,17 @@ describe("plugin panel tab identity", () => {
     expect(agent).toBe("plugin_agent_6_review_7_details_7_agent-1");
   });
 });
+
+describe("hermes room tab identity", () => {
+  it("round-trips normalization", () => {
+    expect(normalizeWorkspaceTabTarget({ kind: "hermes_room" })).toEqual({ kind: "hermes_room" });
+  });
+
+  it("treats two hermes_room targets as equal", () => {
+    expect(workspaceTabTargetsEqual({ kind: "hermes_room" }, { kind: "hermes_room" })).toBe(true);
+  });
+
+  it("has a stable deterministic id", () => {
+    expect(buildDeterministicWorkspaceTabId({ kind: "hermes_room" })).toBe("hermes_room");
+  });
+});
