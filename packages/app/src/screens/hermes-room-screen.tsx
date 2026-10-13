@@ -139,7 +139,27 @@ function useHermesRoomDraft(serverId: string) {
     [draftStoreKey],
   );
 
-  return { text, editText, textReplacement, clear };
+  // 0.11's Composer reads live text through a text source. Mirror the shared
+  // draft store the room already writes to (same pattern as useAgentInputDraft).
+  const textSource = useMemo<ComposerTextSource>(
+    () => ({
+      getSnapshot: () => useDraftStore.getState().getDraftInput(draftStoreKey)?.text ?? "",
+      subscribe: (listener) =>
+        useDraftStore.subscribe((state, previous) => {
+          if (
+            state.drafts[draftStoreKey]?.input.text !==
+              previous.drafts[draftStoreKey]?.input.text ||
+            state.drafts[draftStoreKey]?.lifecycle !==
+              previous.drafts[draftStoreKey]?.lifecycle
+          ) {
+            listener();
+          }
+        }),
+    }),
+    [draftStoreKey],
+  );
+
+  return { text, editText, textReplacement, clear, textSource };
 }
 
 function HermesRoomReadyState({
@@ -232,26 +252,6 @@ function HermesRoomReadyState({
     [gatewayStatus, pendingRestart, handlePressRestart],
   );
 
-  // 0.11's Composer reads live text through a text source. Mirror the shared
-  // draft store the room already writes to (same pattern as useAgentInputDraft).
-  const textSource = useMemo<ComposerTextSource>(
-    () => ({
-      getSnapshot: () => useDraftStore.getState().getDraftInput(draftStoreKey)?.text ?? "",
-      subscribe: (listener) =>
-        useDraftStore.subscribe((state, previous) => {
-          if (
-            state.drafts[draftStoreKey]?.input.text !==
-              previous.drafts[draftStoreKey]?.input.text ||
-            state.drafts[draftStoreKey]?.lifecycle !==
-              previous.drafts[draftStoreKey]?.lifecycle
-          ) {
-            listener();
-          }
-        }),
-    }),
-    [draftStoreKey],
-  );
-
   const handleSubmitMessage = useCallback(
     async ({ text, attachments: outgoingAttachments }: MessagePayload) => {
       if (outgoingAttachments.length > 0) {
@@ -281,7 +281,7 @@ function HermesRoomReadyState({
         serverId={serverId}
         isPaneFocused={isFocused}
         onSubmitMessage={handleSubmitMessage}
-        textSource={textSource}
+        textSource={draftInput.textSource}
         onChangeText={draftInput.editText}
         textReplacement={draftInput.textReplacement}
         attachments={attachments}
