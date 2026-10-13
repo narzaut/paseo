@@ -958,7 +958,6 @@ interface ComposerProps {
   /** Rendered below the input, inside the keyboard-shifted container. */
   footer?: ReactNode;
   /** When true, a parent wrapper owns the keyboard shift, so the composer skips its own. */
-  externalKeyboardShift?: boolean;
   /** Optional panel/container layout breakpoint. Defaults to the screen breakpoint. */
   isCompactLayout?: boolean;
   /**
@@ -1240,7 +1239,6 @@ function ComposerContentImpl({
   inputWrapperStyle,
   attachmentMenuItemsOverride,
   footer,
-  externalKeyboardShift,
   isCompactLayout: isCompactLayoutOverride,
   inputMode = "chat",
   readOnly = false,
