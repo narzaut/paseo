@@ -138,6 +138,7 @@ const NewTabPanel = memo(function NewTabPanel(): ReactElement {
     workspaceId,
     purpose: host === "explorer" ? "supporting" : "primary",
     host,
+    surface: "panel",
   });
   const itemsById = useMemo(
     () => new Map(groups.flatMap((group) => group.items).map((item) => [item.id, item])),
