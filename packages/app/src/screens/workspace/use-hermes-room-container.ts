@@ -1,6 +1,5 @@
 import { useEffect } from "react";
 import { DEFAULT_PANE_ID, type WorkspaceTabPlacement } from "@/stores/workspace-layout-store";
-import type { WorkspaceSetupStatusClient } from "@/stores/workspace-setup-store";
 import type { WorkspaceTabTarget } from "@/workspace-tabs/model";
 
 /**
@@ -47,32 +46,4 @@ export function useHermesRoomTabSeed(input: {
     openWorkspaceTabInBackground,
     persistenceKey,
   ]);
-}
-
-/**
- * Fetches workspace setup status while the route is focused. `enabled` is
- * false for the container workspace, which has no setup flow — leaving its
- * snapshot empty keeps it out of the setup UI and out of setup-tab seeding.
- */
-export function useWorkspaceSetupStatusSync(input: {
-  enabled: boolean;
-  isRouteFocused: boolean;
-  serverId: string;
-  workspaceId: string;
-  client: WorkspaceSetupStatusClient | null;
-  ensureWorkspaceSetupStatus: (input: {
-    serverId: string;
-    workspaceId: string;
-    client: WorkspaceSetupStatusClient;
-  }) => void;
-}): void {
-  const { enabled, isRouteFocused, serverId, workspaceId, client, ensureWorkspaceSetupStatus } =
-    input;
-
-  useEffect(() => {
-    if (!enabled || !isRouteFocused || !client || !serverId || !workspaceId) {
-      return;
-    }
-    ensureWorkspaceSetupStatus({ serverId, workspaceId, client });
-  }, [client, enabled, ensureWorkspaceSetupStatus, isRouteFocused, serverId, workspaceId]);
 }
