@@ -153,6 +153,9 @@ const manifests = {
   hermes_room: {
     kind: "hermes_room",
     supportedHosts: ["main"],
+    showCloseButton: true,
+    singleton: true,
+    compactSheet: null,
     resourceKey: () => "hermes_room",
   },
   commit_diff: {

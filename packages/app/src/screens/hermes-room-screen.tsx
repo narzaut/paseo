@@ -1,15 +1,15 @@
-import { useIsFocused } from "@react-navigation/native";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { RotateCw } from "lucide-react-native";
 import { AgentStreamView } from "@/agent-stream/view";
+import { PaneFocusProvider, createPaneFocusContextValue } from "@/panels/pane-context";
 import { Composer } from "@/composer";
 import { ToastViewport, useToastHost } from "@/components/toast-host";
 import { Button } from "@/components/ui/button";
 import { ScreenHeader } from "@/components/headers/screen-header";
 import { ScreenTitle } from "@/components/headers/screen-title";
-import { SidebarMenuToggle } from "@/components/headers/menu-header";
+import { SidebarMenuToggle } from "@/components/headers/sidebar-menu-toggle";
 import type { UserComposerAttachment } from "@/attachments/types";
 import type { MessagePayload, TextReplacement } from "@/composer/types";
 import type { ComposerTextSource } from "@/composer/text-source";
@@ -95,6 +95,7 @@ function useHermesRoomDraft(serverId: string) {
   const [text, setText] = useState("");
   const revisionRef = useRef(0);
   const [textReplacement, setTextReplacement] = useState<TextReplacement>(() => ({
+    kind: "initial",
     key: `${draftStoreKey}:0`,
     text: "",
   }));
@@ -109,7 +110,11 @@ function useHermesRoomDraft(serverId: string) {
       const storedText = useDraftStore.getState().getDraftInput(draftStoreKey)?.text ?? "";
       if (storedText.length > 0) {
         revisionRef.current += 1;
-        setTextReplacement({ key: `${draftStoreKey}:${revisionRef.current}`, text: storedText });
+        setTextReplacement({
+          kind: "hydrated",
+          key: `${draftStoreKey}:${revisionRef.current}`,
+          text: storedText,
+        });
       }
       setText(storedText);
     })();
@@ -149,8 +154,7 @@ function useHermesRoomDraft(serverId: string) {
           if (
             state.drafts[draftStoreKey]?.input.text !==
               previous.drafts[draftStoreKey]?.input.text ||
-            state.drafts[draftStoreKey]?.lifecycle !==
-              previous.drafts[draftStoreKey]?.lifecycle
+            state.drafts[draftStoreKey]?.lifecycle !== previous.drafts[draftStoreKey]?.lifecycle
           ) {
             listener();
           }
@@ -262,19 +266,29 @@ function HermesRoomReadyState({
     [sendMessage],
   );
 
+  const paneFocus = useMemo(
+    () => createPaneFocusContextValue({ isWorkspaceFocused: isFocused, isPaneFocused: isFocused }),
+    [isFocused],
+  );
+
   return (
     <View style={styles.root}>
       <View style={styles.contentContainer}>
-        <AgentStreamView
-          agentId={HERMES_ROOM_AGENT_ID}
-          serverId={serverId}
-          context={agent}
-          streamItems={streamItems}
-          pendingPermissions={EMPTY_PENDING_PERMISSIONS}
-          turnPresentation={HERMES_TURN_PRESENTATION}
-          isAuthoritativeHistoryReady
-          toast={toastApi}
-        />
+        {/* The room is not a workspace pane, but AgentStreamView's chat-find
+            reads pane focus (usePaneFocus throws without a provider). The room
+            is mounted only while open, so it is the focused pane. */}
+        <PaneFocusProvider value={paneFocus}>
+          <AgentStreamView
+            agentId={HERMES_ROOM_AGENT_ID}
+            serverId={serverId}
+            context={agent}
+            streamItems={streamItems}
+            pendingPermissions={EMPTY_PENDING_PERMISSIONS}
+            turnPresentation={HERMES_TURN_PRESENTATION}
+            isAuthoritativeHistoryReady
+            toast={toastApi}
+          />
+        </PaneFocusProvider>
       </View>
       <Composer
         agentId={HERMES_ROOM_AGENT_ID}
@@ -340,7 +354,10 @@ export function HermesRoomContent({
 }
 
 export function HermesRoomScreen({ serverId }: { serverId: string }) {
-  const isFocused = useIsFocused();
+  // ponytail: room is mounted only while open, so mounted == focused.
+  // (useIsFocused from @react-navigation/native throws on web: expo-router
+  // provides no NavigationContainer there — that was the crash.)
+  const isFocused = true;
 
   return (
     <View style={styles.screenRoot} testID="hermes-room-screen">
