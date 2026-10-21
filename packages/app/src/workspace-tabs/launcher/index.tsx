@@ -128,7 +128,6 @@ export function useWorkspaceTabLaunchCatalog(input: {
   }, [router, serverId]);
 
   return useMemo(() => {
-    const isExplorerMenu = host === "explorer" && surface === "menu";
     const changesPresentation = getLaunchPresentation("changes_tree");
     const diffPresentation = getLaunchPresentation("working_diff");
     const filesPresentation = getLaunchPresentation("files");
@@ -141,7 +140,6 @@ export function useWorkspaceTabLaunchCatalog(input: {
         shortcutActionId: "workspace-tab-target-agent",
         disabled: false,
         panelKind: "draft",
-        hidden: isExplorerMenu,
         launch: launchSelection(BUILT_IN_SELECTIONS.agent),
       },
       terminal: {
@@ -233,7 +231,7 @@ export function useWorkspaceTabLaunchCatalog(input: {
     if (pluginItems.length > 0) {
       groups.push({ id: "plugin-panels", label: null, items: pluginItems });
     }
-    if (!isExplorerMenu && profiles.length > 0) {
+    if (profiles.length > 0) {
       groups.push({
         id: "terminal-profiles",
         label: t("workspace.tabs.actions.terminalProfilesMenu"),
