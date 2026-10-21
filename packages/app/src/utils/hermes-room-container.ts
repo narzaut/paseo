@@ -12,7 +12,7 @@ import {
 // rides the normal workspace machinery (deck retention, tabs, terminals).
 // ponytail: single-host constant — the fork daemon serves this VPS. Move to
 // per-host config if the fork is ever deployed against other machines.
-export const HERMES_ROOM_CONTAINER_DIR = "/home/ubuntu/paseo-hermes-room";
+export const HERMES_ROOM_CONTAINER_DIR = "/home/ignacio-homelab/paseo-hermes-room";
 export const HERMES_ROOM_CONTAINER_WORKSPACE_TITLE = "Hermes";
 
 type HermesRoomContainerClient = Pick<DaemonClient, "addProject" | "createWorkspace">;
